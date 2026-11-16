@@ -13,7 +13,7 @@ fi
 
 MODS=("$@")
 if [[ ${#MODS[@]} -eq 0 ]]; then
-  MODS=(orca-setup orca-remove projects)
+  MODS=(orca-setup orca-remove projects orca-new)
 fi
 
 mkdir -p "$HERDR_APP_HOME/mods"

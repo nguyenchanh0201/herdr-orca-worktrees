@@ -243,11 +243,11 @@ export default class Projects extends View {
           .on_click((_e, cx) => {
             cx.stop_propagation();
             openOverlay({
-              mod: "worktree",
-              kind: "dialog",
-              width: 460,
-              height: 280,
-              props: { folder: g.primary, machine: null, action: "new" },
+              mod: "orca-new",
+              kind: "popup",
+              width: 250,
+              height: 260,
+              props: { folder: g.primary },
             });
           })
           .child("+")
