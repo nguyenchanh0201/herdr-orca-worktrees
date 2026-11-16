@@ -293,3 +293,65 @@ test("elapsed", () => {
   assert.equal(g.elapsed(3_600_000), "1h");
   assert.equal(g.elapsed(7_300_000), "2h");
 });
+
+test("saved-only group after space groups", () => {
+  const r = sp("r", { folder: "/r" });
+  const repoMap = { "/r": { primary: "/r", linked: false } };
+  const groups = g.group([r], (s) => s.folder, (p) => repoMap[p], {
+    saved: [{ path: "/s", exists: true }],
+  });
+  assert.deepEqual(groups.map((grp) => grp.key), ["/r", "/s"]);
+  assert.deepEqual(groups[1], {
+    key: "/s",
+    name: "s",
+    kind: "repo",
+    primary: "/s",
+    primarySpace: null,
+    rows: [],
+    saved: true,
+    exists: true,
+  });
+});
+
+test("saved before Other", () => {
+  const r = sp("r", { folder: "/r" });
+  const h = sp("h", { folder: "/home" });
+  const repoMap = {
+    "/r": { primary: "/r", linked: false },
+    "/home": null,
+  };
+  const groups = g.group([r, h], (s) => s.folder, (p) => repoMap[p], {
+    saved: [{ path: "/s", exists: true }],
+  });
+  assert.deepEqual(groups.map((grp) => grp.key), ["/r", "/s", "other"]);
+});
+
+test("saved with spaces not duplicated", () => {
+  const r = sp("r", { folder: "/r" });
+  const repoMap = { "/r": { primary: "/r", linked: false } };
+  const groups = g.group([r], (s) => s.folder, (p) => repoMap[p], {
+    saved: [{ path: "/r", exists: true }],
+  });
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].key, "/r");
+  assert.equal(groups[0].saved, true);
+  assert.equal(groups[0].exists, true);
+  assert.equal(groups[0].rows.length, 1);
+});
+
+test("missing saved keeps header", () => {
+  const groups = g.group([], (s) => s.folder, () => null, {
+    saved: [{ path: "/gone", exists: false }],
+  });
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0], {
+    key: "/gone",
+    name: "gone",
+    kind: "repo",
+    primary: "/gone",
+    primarySpace: null,
+    rows: [],
+    saved: true,
+    exists: false,
+  });
+});

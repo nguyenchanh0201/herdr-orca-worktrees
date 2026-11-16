@@ -37,6 +37,13 @@ export function visibleRows(g, collapsed) {
 export function group(spaces = [], placeOf = (s) => s?.folder ?? "", repoOf = () => null, opts = {}) {
   const prevKeyOf = opts?.prevKeyOf ?? (() => undefined);
   const giveUp = opts?.giveUp ?? (() => false);
+  const saved = Array.isArray(opts?.saved) ? opts.saved : [];
+  const savedByPath = new Map();
+  for (const s of saved) {
+    if (s && typeof s.path === "string" && !savedByPath.has(s.path)) {
+      savedByPath.set(s.path, Boolean(s.exists));
+    }
+  }
 
   // Pass 1: Classify spaces and discover all definitive group keys this round
   const items = [];
@@ -131,14 +138,32 @@ export function group(spaces = [], placeOf = (s) => s?.folder ?? "", repoOf = ()
     }
   }
 
-  // Group order: insertion order (first space in spaces), with "other" always last
+  // Group order: insertion order (first space in spaces), then saved-only in saved order, with "other" always last
   const result = [];
   let otherGroup = null;
   for (const g of groupsMap.values()) {
     if (g.key === "other") {
       otherGroup = g;
     } else {
+      if (savedByPath.has(g.key)) {
+        g.saved = true;
+        g.exists = savedByPath.get(g.key);
+      }
       result.push(g);
+    }
+  }
+  for (const [path, exists] of savedByPath) {
+    if (!groupsMap.has(path)) {
+      result.push({
+        key: path,
+        name: repoName(path),
+        kind: "repo",
+        primary: path,
+        primarySpace: null,
+        rows: [],
+        saved: true,
+        exists,
+      });
     }
   }
   if (otherGroup) {
