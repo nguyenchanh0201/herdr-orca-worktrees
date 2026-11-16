@@ -79,7 +79,7 @@
   - `saved with spaces not duplicated`: saved `[{path:"/r",exists:true}]` → one `/r` group, `saved: true`.
   - `missing saved keeps header`: saved `[{path:"/gone",exists:false}]` → group `/gone` with `exists: false`.
 - [ ] **Step 2:** run → FAIL. **Step 3:** implement. **Step 4:** `npm test` → pass.
-- [ ] **Step 5:** `git commit -am "feat: saved-only project groups"` (only `group.js` and its test staged).
+- [ ] **Step 5:** `git add mods/projects/group.js test/projects-group.test.js && git commit -m "feat: saved-only project groups"`
 
 ### Task 3: Sidebar + `orca-project` mod
 
