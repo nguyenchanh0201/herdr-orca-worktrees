@@ -1,7 +1,7 @@
-import { View, div } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, machines, run, openOverlay, exec, theme, checking } from "herdr";
-import { placeOf, group, visibleRows, label } from "./group.js";
+import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking } from "herdr";
+import { placeOf, group, visibleRows, label, agentsBySpace, sinceUpdate, elapsed } from "./group.js";
 import config from "./config.js";
 
 export default class Projects extends View {
@@ -22,6 +22,7 @@ export default class Projects extends View {
     } catch {}
     this.scroll = ScrollHandle.new();
     this.lastActive = null;
+    this.since = new Map();
     this.sig = "";
 
     if (checking()) return;
@@ -84,7 +85,12 @@ export default class Projects extends View {
 
     const activeSpace = sps.find((s) => s.active);
     const activeId = activeSpace ? activeSpace.id : "";
-    const nextSig = sps.map((s) => `${s.id}=${placeOf(s, ps)}`).join(";") + `|active=${activeId}`;
+    const ag = agents();
+    this.since = sinceUpdate(this.since, ag, now);
+    const nextSig = sps.map((s) => `${s.id}=${placeOf(s, ps)}`).join(";")
+      + `|active=${activeId}`
+      + `|agents=${ag.map((a) => `${a.address}:${a.status}`).join(",")}`
+      + `|min=${Math.floor(now / 60000)}`;
 
     let shouldNotify = false;
     if (nextSig !== this.sig) {
@@ -173,6 +179,9 @@ export default class Projects extends View {
         .child(div().text_color(t.muted).child("No spaces"));
     }
 
+    const now = Date.now();
+    const bySpace = agentsBySpace(agents());
+    const order = [];
     const children = [];
     let activeIndex = -1;
     const activeSpace = sps.find((s) => s.active);
@@ -187,6 +196,10 @@ export default class Projects extends View {
           activeIndex = children.length;
         }
         children.push(this.renderRow(row, t));
+        for (const a of bySpace.get(row.space.id) ?? []) {
+          order.push(a.address);
+          children.push(this.renderAgent(a, t, now));
+        }
       }
     }
 
@@ -196,6 +209,8 @@ export default class Projects extends View {
         this.scroll.scroll_to_item(activeIndex);
       }
     }
+
+    setAgentOrder(order);
 
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
       .child(
@@ -293,5 +308,30 @@ export default class Projects extends View {
     }
 
     return rowEl;
+  }
+
+  renderAgent(a, t, now) {
+    const icon = !a.program?.icon
+      ? svg("icons/agent.svg").size(13).flex_none().text_color(t.foreground)
+      : a.program.tint
+        ? svg(a.program.icon).size(13).flex_none().text_color(t.foreground)
+        : image(a.program.icon).size(13).flex_none();
+    const dur = elapsed(now - (this.since.get(a.address)?.at ?? now));
+
+    return h_flex()
+      .id(`agent-${a.address}`)
+      .h(24)
+      .pl(24)
+      .pr(8)
+      .gap(8)
+      .items_center()
+      .rounded(6)
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover))
+      .on_click(() => run("pane.focus", { pane: a.pane }))
+      .child(icon)
+      .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(a.program?.name ?? a.app ?? ""))
+      .child(div().flex_none().text_color(t[a.status] ?? t.unknown).child(a.status ?? ""))
+      .when(Boolean(dur), (el) => el.child(div().flex_none().text_color(t.dim).child(dur)));
   }
 }
