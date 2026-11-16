@@ -39,11 +39,11 @@ export default class Projects extends View {
     const now = Date.now();
     const currentIds = new Set(sps.map((s) => s.id));
 
-    for (const id of this.seenAt.keys()) {
+    for (const id of this.lastPlace.keys()) {
       if (!currentIds.has(id)) {
+        this.lastPlace.delete(id);
         this.seenAt.delete(id);
         this.givenUp.delete(id);
-        this.lastPlace.delete(id);
       }
     }
 
@@ -154,7 +154,7 @@ export default class Projects extends View {
       (p) => (p ? this.repo.get(p) : null),
       {
         prevKeyOf: (id) => this.keyOf.get(id),
-        giveUp: (id) => Date.now() - (this.seenAt.get(id) ?? 0) >= 1000,
+        giveUp: (id) => this.seenAt.has(id) && Date.now() - this.seenAt.get(id) >= 1000,
       }
     );
 
