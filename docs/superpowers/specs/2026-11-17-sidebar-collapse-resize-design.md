@@ -38,16 +38,32 @@ The person picked A.
    `min 280` stored 100 in `layouts/.state/orca.json`). So `projects`' 500 ms
    `check()` reads `layout()`'s `sidebar` node: if it isn't hidden and its
    `size.px < 160`, it runs
-   `run("layout.resize", { id: "sidebar", px: shared("sidebar.width") ?? 268 })`,
-   `setShared("sidebar.collapsed", false)`, then
+   `run("layout.resize", { id: "sidebar", px: restore })` with
+   `restore = clamp(shared("sidebar.width") ?? 268, 220, 500)` (an old saved
+   width may be under 220), `setShared("sidebar.collapsed", false)`, then
    `run("layout.hide", { id: "sidebar" })`. Net effect: the button hides the
-   sidebar, and it comes back at its old width. This also repairs the current
-   saved 90 px state on first run.
+   sidebar, and it comes back at its old width.
+   - **Only a change seen while running hides.** If the sidebar is already
+     narrow when `projects` starts (the person's current saved 90 px, or a
+     rail saved by an older build), it is only resized to `restore` and stays
+     visible — opening Herdr never makes the sidebar vanish by itself.
+   - **No squeezed flash.** Between the shipped resize and the next check
+     (≤ 500 ms), `projects`' `render()` draws an empty `chrome` background when
+     the sidebar is narrower than 160 px instead of the squeezed list.
 3. **Way back.** `cmd-b` already runs `layout.toggle:sidebar` (`keys.json`).
    Plus a button at the left of the bottom `orca` strip (`orca-setup`),
-   before the "orca" label: a sidebar icon (`svg("mods/workspace-chrome/…")`
-   if a suitable shipped icon exists, else `◧`), shown only while the
-   sidebar is hidden; click → `run("layout.show", { id: "sidebar" })`. The
+   before the "orca" label: `svg("mods/workspace-chrome/sidebar.svg")` (a
+   shipped icon, referenced by path as `projects` already does with
+   `branch.svg`), shown only while the sidebar is hidden; click →
+   `run("layout.show", { id: "sidebar" })`.
+   - **Redraw on time.** `orca-setup`'s own timer is 3 s, too slow for the
+     button to appear when the sidebar hides. `projects` keeps running while
+     hidden (copies in a hidden column stay alive) and, in its 500 ms check,
+     calls `setShared("orca.sidebar.hidden", <bool>)` whenever the sidebar's
+     hidden state changes (any cause: its own hide, `cmd-b`, the button).
+     `setShared` re-renders every mod, so the strip redraws at once. The strip
+     decides visibility from `find(layout(), "sidebar")?.hidden`, not from
+     the shared value (that is only the redraw nudge). The
    strip is outside the sidebar, so it is always visible; the shipped tabs
    bar already pads for the macOS window buttons when the sidebar is hidden.
 4. **Rename.** Create `~/.config/herdr-app/programs.json`:
@@ -64,6 +80,13 @@ The person picked A.
   "DeepSeek TUI"; `ctrl-shift-l` to `main` → Herdr's rail behaviour unchanged
   there.
 
-## Left to the builder
+## Review notes (2026-11-17)
 
-- The exact icon for the strip button.
+Checked against Herdr 0.1.16: `layout()` is the merged tree with saved
+clicks (the shipped mods read `size.px` from it); `layout.hide` / `layout.show`
+/ `layout.toggle` exist; `cmd-b` → `layout.toggle:sidebar` in `keys.json`;
+the shipped `tabs` mod pads for the window buttons when `sidebar.hidden`
+(`tabs/main.js:126-129`); `programs.json` changes entries field by field, so
+a name-only entry keeps the icon and `run`; `mods/workspace-chrome/sidebar.svg`
+exists. Not checked: whether a hidden state persists across a restart
+(expected, as a layout click) — covered by the manual test.
