@@ -1,7 +1,8 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking } from "herdr";
+import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared } from "herdr";
 import { placeOf, group, visibleRows, label, agentsBySpace, sinceUpdate, elapsed } from "./group.js";
+import { findNode, sidebarStep } from "./sidebar.js";
 import config from "./config.js";
 
 export default class Projects extends View {
@@ -24,6 +25,7 @@ export default class Projects extends View {
     this.lastActive = null;
     this.since = new Map();
     this.sig = "";
+    this.side = { seenWide: false, hidden: null };
 
     if (checking()) return;
 
@@ -33,6 +35,14 @@ export default class Projects extends View {
 
   check(cx) {
     if (checking()) return;
+    const r = sidebarStep(findNode(layout(), "sidebar"), this.side, shared("sidebar.width"));
+    this.side = r.state;
+    if (r.resize !== null) {
+      run("layout.resize", { id: "sidebar", px: r.resize });
+      setShared("sidebar.collapsed", false);
+    }
+    if (r.hide) run("layout.hide", { id: "sidebar" });
+    if (r.hide || r.hiddenChanged) setShared("orca.sidebar.hidden", this.side.hidden);
     if (machines().find((m) => m.name === null)?.layout !== "ready") return;
 
     const sps = spaces();
@@ -142,6 +152,9 @@ export default class Projects extends View {
 
   render() {
     const t = theme();
+    if ((findNode(layout(), "sidebar")?.size?.px ?? Infinity) < 160) {
+      return div().size_full().bg(t.chrome);
+    }
     const sps = spaces();
     const ps = panes();
 
