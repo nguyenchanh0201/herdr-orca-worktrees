@@ -83,8 +83,12 @@ sidebar.
   repo or error). Probed once per distinct place; a space whose place changes
   is probed again (that keeps groups right after a `cd`). At most 6 probes in
   flight (the shipped mod's limit, for open-file / exec caps).
-- Not probed yet → the space shows in its old group if it had one, else in
-  **Other** until the answer comes back.
+- Not probed yet → the space shows in its old group if it had one. A space
+  with no group yet is **held back** (not drawn) until its probe answers, at
+  most 1 s, then falls back to **Other**, so a new worktree appears under its
+  repo instead of jumping there (the shipped `spaces` mod does the same).
+- First start: "Loading…" until the first round of probes is back (at most
+  3 s), instead of every space flashing through Other.
 
 ### Grouping and order
 
@@ -94,7 +98,7 @@ in `mods/projects/group.js` (no imports, so it can be unit-tested):
 - Key = `primary` path; name = its basename. Local spaces only.
 - Remote spaces: one group per machine, named after the machine, rows in
   `spaces()` order, no `+` (the person has one remote machine connected).
-- Non-git local spaces: one **Other** group, last.
+- Non-git local spaces: one **Other** group, last, no `+`.
 - Group order: order of each group's first space in `spaces()` (keeps the
   order the person set in Herdr). Rows in a group: the main checkout's space
   first (`linked === false`), then `spaces()` order.
@@ -132,11 +136,24 @@ otherwise.
   props: { tab: "space", target: { id } } })` (rename, close, colour, ...).
 - Indented 12px under the header.
 
+### List
+
+The whole list scrolls (`overflow_y_scroll` with a `ScrollHandle`; the person
+has ~20 spaces open). When the active space changes, its row is scrolled into
+view, as the shipped `spaces` mod does.
+
 ### Refresh
 
-No timer. `render()` reads `spaces()`/`panes()` (the app re-renders mods when
-they change), computes places, and starts probes for unknown places. A probe
-finishing calls `cx.notify()` after the await (see commit 89647f5).
+`render(cx)` gets a plain `Context`, not the `AsyncContext` that starts tasks,
+and the docs don't promise a redraw when only a pane's cwd changes. So, like
+the shipped `spaces` mod (250 ms) and `orca-setup` (3 s):
+- `init` starts `cx.timer.every(500, check)`. `check` compares space ids and
+  places against the last seen ones. It runs **no `exec`**: it only starts
+  probes (`cx.spawn`) for places it hasn't seen, and calls `cx.notify()` when
+  something changed.
+- A probe finishing calls `cx.notify()` after the await (see commit 89647f5).
+- `render()` only reads `spaces()`, `panes()` and the cache. It has no side
+  effects.
 
 ### Empty / loading
 
@@ -166,7 +183,8 @@ finishing calls `cx.notify()` after the await (see commit 89647f5).
 
 ## Left to the builder
 
-- How `group.js` is both imported by the mod (ESM) and loaded by `node --test`
-  in a `commonjs` package (e.g. test via dynamic `import()` of a copy, or an
-  `.mjs` twin) — pick what `herdr-app check` accepts.
+- (Settled) `group.js` is ESM; the repo's `package.json` says `commonjs`, so
+  add `mods/package.json` = `{"type":"module"}` and test it with
+  `await import("../mods/projects/group.js")`. Checked on Node 24.
+  `install.sh` copies `mods/<name>/` only, so that file never reaches Herdr.
 - Exact glyphs and spacing, within the theme colours above.
