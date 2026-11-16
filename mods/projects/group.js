@@ -147,3 +147,41 @@ export function group(spaces = [], placeOf = (s) => s?.folder ?? "", repoOf = ()
 
   return result;
 }
+
+/** Group agents by their `space` id while preserving input order. */
+export function agentsBySpace(agents = []) {
+  const bySpace = new Map();
+  if (!Array.isArray(agents)) return bySpace;
+  for (const a of agents) {
+    if (!a || a.space == null) continue;
+    let list = bySpace.get(a.space);
+    if (!list) {
+      list = [];
+      bySpace.set(a.space, list);
+    }
+    list.push(a);
+  }
+  return bySpace;
+}
+
+/** Track the timestamp when each active agent entered its current status. */
+export function sinceUpdate(prev, agents = [], now = Date.now()) {
+  const next = new Map();
+  if (!Array.isArray(agents)) return next;
+  for (const a of agents) {
+    if (!a || a.address == null) continue;
+    const entry = prev?.get(a.address);
+    next.set(
+      a.address,
+      entry && entry.status === a.status ? entry : { status: a.status, at: now }
+    );
+  }
+  return next;
+}
+
+/** Format a duration in milliseconds as `""`, `"Nm"`, or `"Nh"`. */
+export function elapsed(ms) {
+  if (!Number.isFinite(ms) || ms < 60_000) return "";
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
+  return `${Math.floor(ms / 3_600_000)}h`;
+}

@@ -250,3 +250,46 @@ test("repo name handles trailing slashes", () => {
   assert.equal(groups[0].name, "my-repo");
   assert.equal(groups[0].primary, "/path/to/my-repo/");
 });
+
+test("agentsBySpace groups by space in order", () => {
+  const m = g.agentsBySpace([
+    { address: "a", space: "s1" },
+    { address: "b", space: "s2" },
+    { address: "c", space: "s1" },
+  ]);
+  assert.deepEqual(m.get("s1").map((x) => x.address), ["a", "c"]);
+  assert.deepEqual(m.get("s2").map((x) => x.address), ["b"]);
+  assert.equal(m.get("s3"), undefined);
+});
+
+test("sinceUpdate keeps time while status same", () => {
+  const prev = new Map([["a", { status: "idle", at: 100 }]]);
+  const res = g.sinceUpdate(prev, [{ address: "a", status: "idle" }], 500);
+  assert.deepEqual(res.get("a"), { status: "idle", at: 100 });
+});
+
+test("sinceUpdate resets on status change", () => {
+  const prev = new Map([["a", { status: "idle", at: 100 }]]);
+  const res = g.sinceUpdate(prev, [{ address: "a", status: "working" }], 500);
+  assert.deepEqual(res.get("a"), { status: "working", at: 500 });
+});
+
+test("sinceUpdate starts new agents at now", () => {
+  const res = g.sinceUpdate(new Map(), [{ address: "b", status: "idle" }], 500);
+  assert.deepEqual(res.get("b"), { status: "idle", at: 500 });
+});
+
+test("sinceUpdate drops gone agents", () => {
+  const prev = new Map([["a", { status: "idle", at: 100 }]]);
+  const res = g.sinceUpdate(prev, [], 500);
+  assert.equal(res.size, 0);
+});
+
+test("elapsed", () => {
+  assert.equal(g.elapsed(-100), "");
+  assert.equal(g.elapsed(59_999), "");
+  assert.equal(g.elapsed(60_000), "1m");
+  assert.equal(g.elapsed(3_599_999), "59m");
+  assert.equal(g.elapsed(3_600_000), "1h");
+  assert.equal(g.elapsed(7_300_000), "2h");
+});
