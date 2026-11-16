@@ -46,7 +46,7 @@
 - `headline(p: Provider, now) => string` — `···` when no `fetchedAt` and no windows yet (status missing); `ok` with `[]` → `"--"`; else max-`usedPercent` window: `minutes > 0` → `` `${pct}% ${until(resetsAt, now) || label}` ``; `minutes === 0` → `` `${label} ${pct}%` ``.
 - `barColor(pct) => "ansi2" | "ansi3" | "ansi1"`.
 
-- [ ] **Step 1: Tests** (`test/usage-format.test.js`): `until` at `now+59_000`→`"0m"`… use exact: `+59_000`→`"0m"`, `+60_000`→`"1m"`, `+3_599_000`→`"59m"`, `+3_600_000`→`"1h 0m"`, `+86_400_000`→`"1d 0h"`, `now-1`→`"now"`, `null`→`""`. `headline`: windows 5h 42% (resets +3h12m) & Weekly 18% → `"42% 3h 12m"`; named bucket `{label:"Flash",minutes:0,usedPercent:30}` highest → `"Flash 30%"`; window with `resetsAt:null` → `"42% 5h"`; **`headline of empty ok`** `{status:"ok",windows:[]}` → `"--"`; `{}` → `"···"`. `barColor(79)`→ansi2, `80`→ansi3, `90`→ansi1.
+- [ ] **Step 1: Tests** (`test/usage-format.test.js`): `until(now + x, now)`: `x=59_000`→`"0m"`, `+60_000`→`"1m"`, `+3_599_000`→`"59m"`, `+3_600_000`→`"1h 0m"`, `+86_400_000`→`"1d 0h"`, `now-1`→`"now"`, `null`→`""`. `headline`: windows 5h 42% (resets +3h12m) & Weekly 18% → `"42% 3h 12m"`; named bucket `{label:"Flash",minutes:0,usedPercent:30}` highest → `"Flash 30%"`; window with `resetsAt:null` → `"42% 5h"`; **`headline of empty ok`** `{status:"ok",windows:[]}` → `"--"`; `{}` → `"···"`. `barColor(79)`→ansi2, `80`→ansi3, `90`→ansi1.
 - [ ] **Step 2:** run → FAIL. **Step 3:** implement. **Step 4:** `npm test` → pass.
 - [ ] **Step 5:** `git add src/usage/format.js test/usage-format.test.js && git commit -m "feat: usage formatting"`
 
