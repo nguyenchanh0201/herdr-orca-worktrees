@@ -11,7 +11,7 @@ export default class OrcaNew extends View {
     this.failed = false;
     this.handle = cx.focus_handle();
 
-    if (checking()) return;
+    if (checking() || !props()?.overlay) return;
 
     this.handle.focus();
     cx.spawn(async (cx) => {
@@ -60,6 +60,8 @@ export default class OrcaNew extends View {
   }
 
   render() {
+    // Only meaningful as the `+` popup; a docked copy (no overlay) draws nothing.
+    if (!props()?.overlay) return div();
     const t = theme();
     const installed = this.agents.filter((a) => a.installed);
 
