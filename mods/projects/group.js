@@ -1,0 +1,149 @@
+// Pure, import-free grouping logic for the projects sidebar mod.
+
+function repoName(primary) {
+  if (!primary) return "";
+  const trimmed = primary.replace(/[/\\]+$/, "");
+  const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
+}
+
+export function placeOf(space, panes = []) {
+  if (!space) return "";
+  const tabs = space.tabs;
+  if (Array.isArray(tabs) && tabs.length > 0 && Array.isArray(panes)) {
+    const tabIds = new Set(tabs.map((t) => t.id));
+    for (const p of panes) {
+      if (p && tabIds.has(p.tab) && typeof p.cwd === "string" && p.cwd.length > 0) {
+        return p.cwd;
+      }
+    }
+  }
+  return space.folder ?? "";
+}
+
+export function label(space) {
+  if (!space) return "";
+  return space.named ? space.name : (space.branch ?? space.name);
+}
+
+export function visibleRows(g, collapsed) {
+  if (!g || !Array.isArray(g.rows)) return [];
+  if (collapsed) {
+    return g.rows.filter((r) => Boolean(r.space?.active));
+  }
+  return g.rows;
+}
+
+export function group(spaces = [], placeOf = (s) => s?.folder ?? "", repoOf = () => null, opts = {}) {
+  const prevKeyOf = opts?.prevKeyOf ?? (() => undefined);
+  const giveUp = opts?.giveUp ?? (() => false);
+
+  // Pass 1: Classify spaces and discover all definitive group keys this round
+  const items = [];
+  const knownKeys = new Set();
+
+  for (const s of spaces) {
+    if (s.machine !== null && s.machine !== undefined) {
+      const key = "machine:" + s.machine;
+      knownKeys.add(key);
+      items.push({ space: s, type: "machine", key });
+    } else {
+      const place = placeOf(s);
+      const repo = repoOf(place);
+      if (repo && typeof repo === "object" && repo.primary) {
+        const key = repo.primary;
+        knownKeys.add(key);
+        items.push({ space: s, type: "repo", key, repo });
+      } else if (repo === null) {
+        knownKeys.add("other");
+        items.push({ space: s, type: "other", key: "other" });
+      } else {
+        // repo === undefined (unprobed)
+        items.push({ space: s, type: "unprobed" });
+      }
+    }
+  }
+
+  // If any unprobed space will fall back to "other" via giveUp, mark "other" as an existing group
+  for (const item of items) {
+    if (item.type === "unprobed") {
+      const prevKey = prevKeyOf(item.space.id);
+      if ((!prevKey || !knownKeys.has(prevKey)) && giveUp(item.space.id)) {
+        knownKeys.add("other");
+      }
+    }
+  }
+
+  // Pass 2: Assign unprobed spaces and build groups preserving first-space order
+  const groupsMap = new Map();
+
+  function getOrCreateGroup(key, type) {
+    let g = groupsMap.get(key);
+    if (!g) {
+      if (type === "machine") {
+        const name = key.slice("machine:".length);
+        g = { key, name, kind: "machine", primary: null, primarySpace: null, rows: [] };
+      } else if (type === "other" || key === "other") {
+        g = { key: "other", name: "Other", kind: "other", primary: null, primarySpace: null, rows: [] };
+      } else {
+        const name = repoName(key);
+        g = { key, name, kind: "repo", primary: key, primarySpace: null, rows: [] };
+      }
+      groupsMap.set(key, g);
+    }
+    return g;
+  }
+
+  for (const item of items) {
+    if (item.type === "machine") {
+      const g = getOrCreateGroup(item.key, "machine");
+      g.rows.push({ space: item.space, main: false });
+    } else if (item.type === "repo") {
+      const g = getOrCreateGroup(item.key, "repo");
+      g.rows.push({ space: item.space, main: item.repo.linked === false });
+    } else if (item.type === "other") {
+      const g = getOrCreateGroup("other", "other");
+      g.rows.push({ space: item.space, main: false });
+    } else {
+      // unprobed space
+      const prevKey = prevKeyOf(item.space.id);
+      if (prevKey && knownKeys.has(prevKey)) {
+        const type = prevKey.startsWith("machine:") ? "machine" : (prevKey === "other" ? "other" : "repo");
+        const g = getOrCreateGroup(prevKey, type);
+        g.rows.push({ space: item.space, main: false });
+      } else if (giveUp(item.space.id)) {
+        const g = getOrCreateGroup("other", "other");
+        g.rows.push({ space: item.space, main: false });
+      } else {
+        // Space is omitted
+      }
+    }
+  }
+
+  // Finalize each group: stable sort rows by main first, then calculate primarySpace
+  for (const g of groupsMap.values()) {
+    if (g.kind === "repo") {
+      g.rows.sort((a, b) => (b.main ? 1 : 0) - (a.main ? 1 : 0));
+      const mainRow = g.rows.find((r) => r.main);
+      g.primarySpace = mainRow ? mainRow.space.id : null;
+    } else {
+      g.primarySpace = null;
+    }
+  }
+
+  // Group order: insertion order (first space in spaces), with "other" always last
+  const result = [];
+  let otherGroup = null;
+  for (const g of groupsMap.values()) {
+    if (g.key === "other") {
+      otherGroup = g;
+    } else {
+      result.push(g);
+    }
+  }
+  if (otherGroup) {
+    result.push(otherGroup);
+  }
+
+  return result;
+}
