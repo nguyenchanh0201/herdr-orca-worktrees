@@ -60,11 +60,14 @@ export default class OrcaSetup extends View {
 
   async handle(space, cx) {
     const base = space.folder.split("/").filter(Boolean).pop() || space.name || space.id;
+    this.probing.add(space.id);
     this.error = false;
     this.status = `setting up ${base}…`;
-    cx.notify();
 
     try {
+      await cx.sleep(0);
+      cx.notify();
+
       const info = await this.cli(["info", space.folder]);
       if (info.error) {
         this.linked[space.id] = { folder: space.folder, linked: false, worktree: null };
@@ -120,6 +123,8 @@ export default class OrcaSetup extends View {
       this.error = true;
       this.status = msg;
       notify({ title: "Orca setup", body: msg, level: "error" });
+    } finally {
+      this.probing.delete(space.id);
     }
     cx.notify();
   }
