@@ -1,0 +1,379 @@
+import { View, div } from "gpui-kit";
+import { h_flex, v_flex, InputState, Input } from "gpui-base";
+import { theme, openOverlay, closeOverlay, props, shared, setShared, checking, pickFolder, home, exec } from "herdr";
+import config from "./config.js";
+
+function defaultCloneName(url) {
+  if (typeof url !== "string") return "";
+  const trimmed = url.trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  const seg = trimmed.split(/[/:]/).pop() || "";
+  return seg.replace(/\.git$/i, "");
+}
+
+export default class OrcaProject extends View {
+  init(_p, cx) {
+    this.handle = cx.focus_handle();
+    if (checking() || !props()?.overlay) return;
+
+    const p = props();
+    this.mode = p.mode ?? "add";
+    this.handle.focus();
+
+    if (this.mode === "clone") {
+      let savedParent = "";
+      try {
+        savedParent = localStorage.getItem("clone.parent") || "";
+      } catch {}
+
+      this.userHome = home();
+      this.parentEdited = false;
+      this.nameEdited = false;
+      this.suppressNameChange = false;
+      this.focusedField = "url";
+      this.reqId = null;
+      this.lastCloneState = null;
+      this.lastCloneError = null;
+      this.localError = "";
+      this.closed = false;
+
+      this.urlInput = InputState.new({ placeholder: "https://github.com/org/repo.git" });
+      this.parentInput = InputState.new({ value: savedParent || this.userHome, placeholder: "Parent folder" });
+      this.nameInput = InputState.new({ placeholder: "repo" });
+
+      this.urlInput.on("focus", (_e, cx) => { this.focusedField = "url"; cx.notify(); });
+      this.parentInput.on("focus", (_e, cx) => { this.focusedField = "parent"; cx.notify(); });
+      this.nameInput.on("focus", (_e, cx) => { this.focusedField = "name"; cx.notify(); });
+
+      this.urlInput.on("change", (_e, cx) => {
+        this.localError = "";
+        if (!this.nameEdited) {
+          this.suppressNameChange = true;
+          this.nameInput.set_value(defaultCloneName(this.urlInput.value()));
+          this.suppressNameChange = false;
+        }
+        cx.notify();
+      });
+      this.parentInput.on("change", (_e, cx) => {
+        this.parentEdited = true;
+        this.localError = "";
+        cx.notify();
+      });
+      this.nameInput.on("change", (_e, cx) => {
+        if (!this.suppressNameChange) {
+          this.nameEdited = true;
+        }
+        this.localError = "";
+        cx.notify();
+      });
+
+      this.urlInput.on("submit", (_e, cx) => this.submitClone(cx));
+      this.parentInput.on("submit", (_e, cx) => this.submitClone(cx));
+      this.nameInput.on("submit", (_e, cx) => this.submitClone(cx));
+
+      this.urlInput.focus();
+
+      if (!savedParent) {
+        cx.spawn(async (cx) => {
+          try {
+            const res = await exec("test", ["-d", `${this.userHome}/jimmy_dev`]);
+            if (res.code === 0 && !this.parentEdited) {
+              this.parentInput.set_value(`${this.userHome}/jimmy_dev`);
+              cx.notify();
+            }
+          } catch {}
+        });
+      }
+
+      cx.timer.every(150, (cx) => {
+        if (this.closed || !this.reqId) return;
+        const c = shared("orca.projects.clone");
+        if (c?.id !== this.reqId) return;
+        if (c.state === "done") {
+          this.closed = true;
+          closeOverlay(props().overlay);
+          return;
+        }
+        if (c.state !== this.lastCloneState || c.error !== this.lastCloneError) {
+          this.lastCloneState = c.state;
+          this.lastCloneError = c.error ?? null;
+          cx.notify();
+        }
+      });
+    }
+  }
+
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    closeOverlay(props().overlay);
+  }
+
+  isRunning() {
+    if (!this.reqId) return false;
+    const c = shared("orca.projects.clone");
+    return c?.id === this.reqId && c.state === "running";
+  }
+
+  submitClone(cx) {
+    if (this.isRunning()) return;
+    const url = this.urlInput.value().trim();
+    const parent = this.parentInput.value().trim();
+    const name = this.nameInput.value().trim();
+
+    if (!url) {
+      this.localError = "Git URL is required.";
+      cx.notify();
+      return;
+    }
+    if (!parent) {
+      this.localError = "Parent folder is required.";
+      cx.notify();
+      return;
+    }
+    if (!name) {
+      this.localError = "Folder name is required.";
+      cx.notify();
+      return;
+    }
+
+    this.localError = "";
+    try {
+      localStorage.setItem("clone.parent", parent);
+    } catch {}
+
+    this.reqId = Date.now();
+    this.lastCloneState = "running";
+    this.lastCloneError = null;
+    setShared("orca.projects.clone", { id: this.reqId, state: "running" });
+    setShared("orca.projects.request", { id: this.reqId, kind: "clone", url, parent, name });
+    cx.notify();
+  }
+
+  popupRow(id, label, onClick, t) {
+    return h_flex()
+      .id(id)
+      .h(31)
+      .px(9)
+      .rounded(7)
+      .items_center()
+      .flex_none()
+      .cursor_pointer()
+      .text_color(t.foreground)
+      .hover((s) => s.bg(t.selected))
+      .on_click(onClick)
+      .child(div().flex_1().child(label));
+  }
+
+  renderAdd(t) {
+    return v_flex()
+      .id("orca-project-add")
+      .w_full()
+      .bg(t.popover)
+      .p(5)
+      .text_size(12.8)
+      .track_focus(this.handle)
+      .on_key_down((e) => {
+        if (e.key === "escape") this.close();
+      })
+      .child(
+        this.popupRow(
+          "choose-folder",
+          "Choose folder…",
+          () => {
+            setShared("orca.projects.request", { id: Date.now(), kind: "pick" });
+            this.close();
+          },
+          t
+        )
+      )
+      .child(
+        this.popupRow(
+          "clone-url",
+          "Clone from URL…",
+          () => {
+            this.close();
+            openOverlay({
+              mod: "orca-project",
+              kind: "dialog",
+              width: 520,
+              height: 230,
+              props: { mode: "clone" },
+            });
+          },
+          t
+        )
+      );
+  }
+
+  renderHeader(t) {
+    const p = props();
+    return v_flex()
+      .id("orca-project-header")
+      .w_full()
+      .bg(t.popover)
+      .p(5)
+      .text_size(12.8)
+      .track_focus(this.handle)
+      .on_key_down((e) => {
+        if (e.key === "escape") this.close();
+      })
+      .when(Boolean(p.saved), (el) =>
+        el.child(
+          this.popupRow(
+            "remove-project",
+            "Remove from sidebar",
+            async () => {
+              await exec(config.node, [config.cli, "projects", "remove", p.path]);
+              setShared("orca.projects.rev", Date.now());
+              this.close();
+            },
+            t
+          )
+        )
+      )
+      .when(!p.saved, (el) =>
+        el.child(
+          div()
+            .px(9)
+            .py(6)
+            .text_color(t.dim)
+            .child("Not saved — it shows while its spaces are open")
+        )
+      );
+  }
+
+  renderClone(t) {
+    const clone = this.reqId ? shared("orca.projects.clone") : null;
+    const activeClone = clone?.id === this.reqId ? clone : null;
+    const running = activeClone?.state === "running";
+    const err = this.localError || (activeClone?.state === "error" ? activeClone.error : "");
+
+    const inputStyle = (state, focused, flex1 = false) =>
+      Input.new(state)
+        .h(30)
+        .px(10)
+        .items_center()
+        .rounded(6)
+        .border(1)
+        .border_color(focused ? t.accent : t.input)
+        .bg(t.background)
+        .text_color(t.foreground)
+        .disabled(running)
+        .when(flex1, (el) => el.flex_1());
+
+    return v_flex()
+      .id("orca-project-clone")
+      .track_focus(this.handle)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") {
+          cx.stop_propagation();
+          this.close();
+        }
+      })
+      .size_full()
+      .p(16)
+      .gap(10)
+      .bg(t.popover)
+      .text_size(13)
+      .child(div().font_semibold().text_color(t.foreground).child("Clone from URL"))
+      .child(
+        h_flex()
+          .gap(10)
+          .items_center()
+          .child(div().w(96).flex_none().text_color(t.muted).child("Git URL"))
+          .child(inputStyle(this.urlInput, this.focusedField === "url", true))
+      )
+      .child(
+        h_flex()
+          .gap(10)
+          .items_center()
+          .child(div().w(96).flex_none().text_color(t.muted).child("Parent folder"))
+          .child(inputStyle(this.parentInput, this.focusedField === "parent", true))
+          .child(
+            div()
+              .id("choose-parent")
+              .flex_none()
+              .h(30)
+              .px(10)
+              .flex()
+              .items_center()
+              .rounded(6)
+              .border(1)
+              .border_color(t.input)
+              .bg(t.background)
+              .text_color(running ? t.dim : t.foreground)
+              .cursor_pointer()
+              .disabled(running)
+              .when(!running, (el) => el.hover((s) => s.bg(t.hover)))
+              .on_click((_e, cx) => {
+                if (running) return;
+                cx.spawn(async (cx) => {
+                  const f = await pickFolder({ prompt: "Choose parent folder" });
+                  if (f) {
+                    this.parentEdited = true;
+                    this.parentInput.set_value(f);
+                    this.localError = "";
+                    cx.notify();
+                  }
+                });
+              })
+              .child("Choose…")
+          )
+      )
+      .child(
+        h_flex()
+          .gap(10)
+          .items_center()
+          .child(div().w(96).flex_none().text_color(t.muted).child("Folder name"))
+          .child(inputStyle(this.nameInput, this.focusedField === "name", true))
+      )
+      .when(Boolean(err), (el) => el.child(div().text_size(12).text_color(t.blocked).child(err)))
+      .child(div().flex_1())
+      .child(
+        h_flex()
+          .justify_end()
+          .gap(8)
+          .child(
+            div()
+              .id("cancel-clone")
+              .h(30)
+              .px(12)
+              .flex()
+              .items_center()
+              .rounded(6)
+              .border(1)
+              .border_color(t.input)
+              .text_color(t.muted)
+              .cursor_pointer()
+              .hover((s) => s.bg(t.hover).text_color(t.foreground))
+              .on_click(() => this.close())
+              .child("Cancel")
+          )
+          .child(
+            div()
+              .id("submit-clone")
+              .h(30)
+              .px(14)
+              .flex()
+              .items_center()
+              .rounded(6)
+              .bg(running ? t.hover : t.accent)
+              .text_color(running ? t.muted : t.background)
+              .font_semibold()
+              .cursor_pointer()
+              .disabled(running)
+              .on_click((_e, cx) => this.submitClone(cx))
+              .child(running ? "Cloning…" : "Clone")
+          )
+      );
+  }
+
+  render() {
+    if (!props()?.overlay) return div();
+    const t = theme();
+    if (this.mode === "clone") return this.renderClone(t);
+    if (this.mode === "header") return this.renderHeader(t);
+    return this.renderAdd(t);
+  }
+}
