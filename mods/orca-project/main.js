@@ -46,6 +46,19 @@ export default class OrcaProject extends View {
           cx.notify();
         }
       });
+    } else if (this.mode === "icon") {
+      this.localError = "";
+      this.working = false;
+      this.iconInput = InputState.new({ placeholder: "Path or URL to a PNG, JPEG or WebP, up to 256 KB" });
+      this.iconInput.on("change", (_e, cx) => { this.localError = ""; cx.notify(); });
+      this.iconInput.on("submit", (_e, cx) => this.submitIcon(cx, "custom"));
+      this.iconInput.focus();
+    } else if (this.mode === "rename") {
+      this.localError = "";
+      this.nameInput = InputState.new({ value: p.name ?? "" });
+      this.nameInput.on("change", (_e, cx) => { this.localError = ""; cx.notify(); });
+      this.nameInput.on("submit", (_e, cx) => this.submitRename(cx));
+      this.nameInput.focus();
     } else if (this.mode === "clone") {
       let savedParent = "";
       try {
@@ -246,6 +259,18 @@ export default class OrcaProject extends View {
       })
       .when(Boolean(p.saved), (el) =>
         el.child(
+          this.popupRow("rename-project", "Rename…", () => {
+            this.close();
+            openOverlay({ mod: "orca-project", kind: "dialog", width: 420, height: 160,
+              props: { mode: "rename", path: p.path, name: p.name } });
+          }, t)
+        ).child(
+          this.popupRow("change-project-icon", "Change icon…", () => {
+            this.close();
+            openOverlay({ mod: "orca-project", kind: "dialog", width: 420, height: 260,
+              props: { mode: "icon", path: p.path } });
+          }, t)
+        ).child(
           this.popupRow(
             "remove-project",
             "Remove from sidebar",
@@ -267,6 +292,98 @@ export default class OrcaProject extends View {
             .child("Not saved — it shows while its spaces are open")
         )
       );
+  }
+
+  submitRename(cx) {
+    const p = props();
+    const value = this.nameInput.value();
+    cx.spawn(async (cx) => {
+      try {
+        const res = await exec(config.node, [config.cli, "projects", "rename", p.path, value]);
+        const result = JSON.parse(res.stdout);
+        if (result.error) {
+          this.localError = result.error;
+          cx.notify();
+          return;
+        }
+        setShared("orca.projects.rev", Date.now());
+        this.close();
+      } catch (e) {
+        this.localError = String(e);
+        cx.notify();
+      }
+    });
+  }
+
+  renderRename(t) {
+    return v_flex()
+      .id("orca-project-rename")
+      .track_focus(this.handle)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") { cx.stop_propagation(); this.close(); }
+      })
+      .size_full().p(12).gap(6).bg(t.popover).text_size(13)
+      .child(div().font_semibold().text_color(t.foreground).child("Rename project"))
+      .child(Input.new(this.nameInput).h(30).px(10).items_center().rounded(6)
+        .border(1).border_color(t.accent).bg(t.background).text_color(t.foreground))
+      .child(div().text_size(12).text_color(t.muted).child("Leave empty to use the folder name"))
+      .when(Boolean(this.localError), (el) => el.child(div().text_size(12).text_color(t.blocked).child(this.localError)))
+      .child(h_flex().justify_end().child(
+        div().id("save-project-name").h(30).px(14).flex().items_center().rounded(6)
+          .bg(t.accent).text_color(t.background).font_semibold().cursor_pointer()
+          .on_click((_e, cx) => this.submitRename(cx)).child("Save")
+      ));
+  }
+
+  submitIcon(cx, source) {
+    if (this.working) return;
+    const args = [config.cli, "projects", "set-icon", props().path, source];
+    if (source === "custom") args.push(this.iconInput.value());
+    this.working = true;
+    this.localError = "";
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const res = await exec(config.node, args, { timeout: 30000 });
+        const result = JSON.parse(res.stdout);
+        if (result.error) {
+          this.localError = result.error;
+        } else {
+          setShared("orca.projects.rev", Date.now());
+          this.close();
+        }
+      } catch (e) {
+        this.localError = String(e);
+      } finally {
+        this.working = false;
+        cx.notify();
+      }
+    });
+  }
+
+  renderIcon(t) {
+    return v_flex()
+      .id("orca-project-icon")
+      .track_focus(this.handle)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") { cx.stop_propagation(); this.close(); }
+      })
+      .size_full().p(12).gap(6).bg(t.popover).text_size(13)
+      .child(div().font_semibold().text_color(t.foreground).child("Project icon"))
+      .child(this.popupRow("icon-github", "GitHub avatar", (_e, cx) => this.submitIcon(cx, "github"), t))
+      .child(this.popupRow("icon-repo", "Icon from repo", (_e, cx) => this.submitIcon(cx, "repo"), t))
+      .child(this.popupRow("icon-letter", "Letter", (_e, cx) => this.submitIcon(cx, "letter"), t))
+      .child(div().text_color(t.muted).child("Custom…"))
+      .child(h_flex().gap(8).child(
+        Input.new(this.iconInput).flex_1().h(30).px(10).items_center().rounded(6)
+          .border(1).border_color(t.input).bg(t.background).text_color(t.foreground).disabled(this.working)
+      ).child(
+        div().id("apply-project-icon").h(30).px(14).flex().items_center().rounded(6)
+          .bg(t.accent).text_color(t.background).font_semibold().cursor_pointer().disabled(this.working)
+          .on_click((_e, cx) => this.submitIcon(cx, "custom")).child("Apply")
+      ))
+      .when(this.working, (el) => el.child(div().text_color(t.muted).child("Working…")))
+      .when(Boolean(this.localError), (el) => el.child(div().text_size(12).text_color(t.blocked).child(this.localError)));
   }
 
   renderOptions(t) {
@@ -613,6 +730,8 @@ export default class OrcaProject extends View {
     if (!props()?.overlay) return div();
     const t = theme();
     if (this.mode === "clone") return this.renderClone(t);
+    if (this.mode === "rename") return this.renderRename(t);
+    if (this.mode === "icon") return this.renderIcon(t);
     if (this.mode === "header") return this.renderHeader(t);
     if (this.mode === "options") return this.renderOptions(t);
     if (this.mode === "space") return this.renderSpace(t);

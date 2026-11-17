@@ -1062,8 +1062,8 @@ export default class Projects extends View {
             mod: "orca-project",
             kind: "popup",
             width: 220,
-            height: 80,
-            props: { mode: "header", path: g.primary, saved: Boolean(g.saved) },
+            height: 150,
+            props: { mode: "header", path: g.primary, saved: Boolean(g.saved), name: g.displayName },
           });
         })
       )

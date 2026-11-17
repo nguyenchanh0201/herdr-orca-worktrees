@@ -19,10 +19,10 @@ function element(kind, path) {
   return proxy;
 }
 
-async function harness(respond = () => ({})) {
-  const state = { shared: new Map(), calls: [], spaces: [], agents: [], checking: false, notices: 0 };
+async function harness(respond = () => ({}), overlayProps = null) {
+  const state = { shared: new Map(), calls: [], spaces: [], agents: [], checking: false, notices: 0, overlays: [], inputs: [] };
   const pending = [];
-  const cx = { notify() { state.notices++; }, spawn(fn) { pending.push(Promise.resolve().then(() => fn(cx))); }, timer: { every() {} } };
+  const cx = { notify() { state.notices++; }, stop_propagation() {}, focus_handle: () => ({ focus() {} }), spawn(fn) { pending.push(Promise.resolve().then(() => fn(cx))); }, timer: { every() {} } };
   const context = {
     ...await import('../mods/projects/group.js'),
     ...await import('../mods/projects/sleep.js'),
@@ -34,7 +34,14 @@ async function harness(respond = () => ({})) {
     shared: key => state.shared.get(key), setShared: (k, v) => state.shared.set(k, v),
     spaces: () => state.spaces, panes: () => [], agents: () => state.agents, machines: () => [{ name: null, layout: 'ready' }],
     checking: () => state.checking, layout: () => null, knownAgents: async () => [],
-    run() {}, openOverlay() {}, notify() {}, setAgentOrder() {}, pickFolder: async () => '/new',
+    run() {}, openOverlay(spec) { state.overlays.push({ open: JSON.parse(JSON.stringify(spec)) }); }, closeOverlay(id) { state.overlays.push({ close: id }); },
+    props: () => overlayProps, notify() {}, setAgentOrder() {}, pickFolder: async () => '/new',
+    InputState: { new(options = {}) {
+      const input = { options, text: options.value ?? '', handlers: {}, value() { return this.text; }, set_value(v) { this.text = v; }, on(event, fn) { this.handlers[event] = fn; }, focus() { this.focused = true; } };
+      state.inputs.push(input);
+      return input;
+    } },
+    Input: { new: input => element('Input', input) },
     theme: () => ({}), home: () => '/home', appHome: () => '/app', readTextFile: async () => null,
     config: { node: 'node', cli: 'cli' },
     exec: async (_cmd, argv, options) => {
@@ -43,10 +50,11 @@ async function harness(respond = () => ({})) {
       return { code: 0, stdout: JSON.stringify(await respond(args)), stderr: '' };
     },
   };
-  const source = fs.readFileSync(require.resolve('../mods/projects/main.js'), 'utf8')
-    .replace(/^import .*;\n/gm, '').replace('export default class Projects', 'class Projects');
-  vm.runInNewContext(`${source}\nthis.Projects = Projects;`, context);
-  const view = new context.Projects();
+  const className = overlayProps ? 'OrcaProject' : 'Projects';
+  const source = fs.readFileSync(require.resolve(`../mods/${overlayProps ? 'orca-project' : 'projects'}/main.js`), 'utf8')
+    .replace(/^import .*;\n/gm, '').replace(`export default class ${className}`, `class ${className}`);
+  vm.runInNewContext(`${source}\nthis.Mod = ${className};`, context);
+  const view = new context.Mod();
   view.init({}, cx);
   return { view, cx, state, async flush() { while (pending.length) await Promise.all(pending.splice(0)); } };
 }
@@ -162,5 +170,122 @@ test('Projects rows and live/sleeping Activity rows use loaded login identities'
     texts(tree).includes('explore'),
   ], [true, true, true]);
   assert.ok(!texts(tree).some(s => s.startsWith('jimmy/')));
+});
+
+// Catches missing display-name props/space for the expanded project popup.
+test('header right-click opens expanded popup with the display name', async () => {
+  const h = await harness();
+  await h.flush();
+  const tree = h.view.renderHeader({ kind: 'repo', key: 'r', primary: '/repo', saved: true, displayName: 'Admin Portal', rows: [] }, false, {});
+  tree.attrs.on_mouse_down[1]({}, h.cx);
+  assert.deepEqual(h.state.overlays, [{ open: { mod: 'orca-project', kind: 'popup', width: 220, height: 150, props: { mode: 'header', path: '/repo', saved: true, name: 'Admin Portal' } } }]);
+});
+
+// Catches actions on unsaved groups, missing/reordered rows, or incorrect dialog contracts.
+test('saved header menu closes before opening rename/icon dialogs; unsaved only explains', async () => {
+  for (const [label, mode, height, extra] of [['Rename…', 'rename', 160, { name: 'Admin Portal' }], ['Change icon…', 'icon', 260, {}]]) {
+    const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin Portal' });
+    const tree = h.view.render();
+    assert.deepEqual(texts(tree), ['Rename…', 'Change icon…', 'Remove from sidebar']);
+    nodes(tree).find(n => n.attrs.on_click && texts(n).includes(label)).attrs.on_click({}, h.cx);
+    assert.deepEqual(h.state.overlays, [{ close: 'menu' }, { open: { mod: 'orca-project', kind: 'dialog', width: 420, height, props: { mode, path: '/repo', ...extra } } }]);
+  }
+  const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: false, path: '/repo' });
+  assert.deepEqual(texts(h.view.render()), ['Not saved — it shows while its spaces are open']);
+  assert.equal(nodes(h.view.render()).filter(n => n.attrs.on_click).length, 0);
+});
+
+// Catches lost prefill/retention, missing submit binding, empty-name rejection, or absent refresh/close.
+test('rename dialog retains prefilled input and submits Enter or Save including empty names', async () => {
+  for (const [value, enter] of [['Admin Portal', true], ['', false]]) {
+    const h = await harness(undefined, { overlay: 'rename', mode: 'rename', path: '/repo', name: 'Old name' });
+    let tree = h.view.render();
+    assert.ok(texts(tree).includes('Rename project'));
+    assert.ok(texts(tree).includes('Leave empty to use the folder name'));
+    const input = nodes(tree).find(n => n.kind === 'Input')?.path;
+    assert.equal(input?.value(), 'Old name');
+    assert.equal(input.focused, true);
+    input.set_value(value);
+    tree = h.view.render();
+    assert.equal(nodes(tree).find(n => n.kind === 'Input').path, input);
+    if (enter) input.handlers.submit({}, h.cx);
+    else nodes(tree).find(n => n.attrs.on_click && texts(n).includes('Save')).attrs.on_click({}, h.cx);
+    await h.flush();
+    assert.deepEqual(Array.from(h.state.calls[0].args), ['projects', 'rename', '/repo', value]);
+    assert.equal(typeof h.state.shared.get('orca.projects.rev'), 'number');
+    assert.deepEqual(h.state.overlays, [{ close: 'rename' }]);
+  }
+});
+
+// Catches closing/refreshing on CLI errors or missing Escape handling from the input focus path.
+test('rename errors stay inline in blocked color and Escape closes', async () => {
+  const h = await harness(() => ({ error: 'Rename failed' }), { overlay: 'rename', mode: 'rename', path: '/repo', name: 'Old' });
+  const tree = h.view.render();
+  assert.ok(texts(tree).includes('Save'));
+  nodes(tree).find(n => n.attrs.on_click && texts(n).includes('Save')).attrs.on_click({}, h.cx);
+  await h.flush();
+  const failed = h.view.renderRename({ blocked: 'error-color' });
+  assert.ok(nodes(failed).some(n => n.attrs.text_color === 'error-color' && texts(n).includes('Rename failed')));
+  assert.deepEqual(h.state.overlays, []);
+  assert.equal(h.state.shared.has('orca.projects.rev'), false);
+  failed.attrs.on_key_down({ key: 'escape' }, h.cx);
+  assert.deepEqual(h.state.overlays, [{ close: 'rename' }]);
+});
+
+// Catches wrong CLI sources/timeout, missing retained custom input, or missing success refresh.
+test('icon dialog applies all sources and custom input through Apply or Enter', async () => {
+  for (const [label, source, value, enter] of [['GitHub avatar', 'github'], ['Icon from repo', 'repo'], ['Letter', 'letter'], ['Apply', 'custom', '/tmp/icon.png'], ['Apply', 'custom', 'https://example.com/icon.webp', true]]) {
+    const h = await harness(undefined, { overlay: 'icon', mode: 'icon', path: '/repo' });
+    const tree = h.view.render();
+    assert.deepEqual(texts(tree), ['Project icon', 'GitHub avatar', 'Icon from repo', 'Letter', 'Custom…', 'Apply']);
+    const input = nodes(tree).find(n => n.kind === 'Input')?.path;
+    assert.equal(input?.options.placeholder, 'Path or URL to a PNG, JPEG or WebP, up to 256 KB');
+    if (value) input.set_value(value);
+    assert.equal(nodes(h.view.render()).find(n => n.kind === 'Input').path, input);
+    if (enter) input.handlers.submit({}, h.cx);
+    else nodes(tree).find(n => n.attrs.on_click && texts(n).includes(label)).attrs.on_click({}, h.cx);
+    await h.flush();
+    assert.deepEqual(Array.from(h.state.calls[0].args), ['projects', 'set-icon', '/repo', source, ...(value ? [value] : [])]);
+    assert.equal(h.state.calls[0].options.timeout, 30000);
+    assert.equal(typeof h.state.shared.get('orca.projects.rev'), 'number');
+    assert.deepEqual(h.state.overlays, [{ close: 'icon' }]);
+  }
+});
+
+// Catches absent synchronous busy guard, Working text, inline errors, or permanent busy state after failure.
+test('icon dialog shows Working and ignores further clicks until error allows retry', async () => {
+  let finish;
+  const h = await harness(() => new Promise(resolve => { finish = resolve; }), { overlay: 'icon', mode: 'icon', path: '/repo' });
+  const tree = h.view.render();
+  assert.ok(texts(tree).includes('GitHub avatar'));
+  const click = label => nodes(tree).find(n => n.attrs.on_click && texts(n).includes(label)).attrs.on_click({}, h.cx);
+  click('GitHub avatar');
+  click('Letter');
+  click('Apply');
+  assert.ok(texts(h.view.render()).includes('Working…'));
+  await Promise.resolve();
+  assert.equal(h.state.calls.length, 1);
+  finish({ error: 'Bad icon path' });
+  await h.flush();
+  const failed = h.view.renderIcon({ blocked: 'error-color' });
+  assert.ok(nodes(failed).some(n => n.attrs.text_color === 'error-color' && texts(n).includes('Bad icon path')));
+  assert.ok(!texts(failed).includes('Working…'));
+  assert.deepEqual(h.state.overlays, []);
+  assert.equal(h.state.shared.has('orca.projects.rev'), false);
+  nodes(failed).find(n => n.attrs.on_click && texts(n).includes('Letter')).attrs.on_click({}, h.cx);
+  await Promise.resolve();
+  assert.equal(h.state.calls.length, 2);
+  finish({});
+  await h.flush();
+  assert.deepEqual(h.state.overlays, [{ close: 'icon' }]);
+});
+
+test('icon dialog Escape closes without changing the project', async () => {
+  const h = await harness(undefined, { overlay: 'icon', mode: 'icon', path: '/repo' });
+  const tree = h.view.render();
+  assert.ok(texts(tree).includes('Project icon'));
+  tree.attrs.on_key_down({ key: 'escape' }, h.cx);
+  assert.deepEqual(h.state.overlays, [{ close: 'icon' }]);
+  assert.equal(h.state.calls.length, 0);
 });
 
