@@ -445,3 +445,132 @@ test('open flag', async () => {
   assert.equal(h.state.shared.get('orca.resources.open'), true);
 });
 
+function snapWithOther() {
+  const s = sampleSnap();
+  s.other = [{ address: 't9', pid: 900, label: 'stray', agent: 'zsh', cpu: 0.1, rss: 1000 }];
+  return s;
+}
+
+test('PTYs tab lists only Herdr terminals with counts', async () => {
+  const h = await panelHarness({
+    shared: [['orca.resources', snapWithOther()]],
+    storage: [['resources.tab', 'ptys']],
+  });
+  const all = texts(h.view.render(h.cx));
+  assert.ok(all.includes('2 Herdr terminals on this computer'), `got ${JSON.stringify(all)}`);
+  assert.ok(!all.includes('Other terminals'));
+  assert.ok(all.includes('2'));
+});
+
+test('Select all then End selected asks once and kills each', async () => {
+  const h = await panelHarness({
+    shared: [['orca.resources', sampleSnap()]],
+    storage: [['resources.tab', 'ptys']],
+    exec: () => ({ code: 0, stdout: '', stderr: '' }),
+  });
+  let tree = h.view.render(h.cx);
+  const selectAll = nodes(tree).find((n) => n.attrs.id === 'pty-select-all');
+  assert.ok(selectAll && selectAll.attrs.on_click);
+  selectAll.attrs.on_click({}, h.cx);
+
+  tree = h.view.render(h.cx);
+  const endSel = nodes(tree).find((n) => n.attrs.id === 'pty-end-selected');
+  assert.ok(endSel && endSel.attrs.on_click);
+  endSel.attrs.on_click({}, h.cx);
+
+  tree = h.view.render(h.cx);
+  const all = texts(tree);
+  assert.ok(
+    all.includes('End 2 terminals and their processes? One is running Claude Code.'),
+    `missing confirm in ${JSON.stringify(all)}`,
+  );
+
+  const confirmBtn = nodes(tree).find((n) => n.attrs.id === 'pty-confirm-end');
+  assert.ok(confirmBtn && confirmBtn.attrs.on_click);
+  confirmBtn.attrs.on_click({}, h.cx);
+  await h.flush();
+
+  const kills = h.state.execs.filter((e) => e.cmd === 'hc' && e.argv[0] === 'kill').map((e) => e.argv[1]);
+  assert.deepEqual(kills.sort(), ['t1', 't2']);
+  assert.ok(h.state.shared.get('orca.resources.refresh')?.at);
+});
+
+test('a failed kill shows inline and others still end', async () => {
+  const h = await panelHarness({
+    shared: [['orca.resources', sampleSnap()]],
+    storage: [['resources.tab', 'ptys']],
+    exec: (_cmd, argv) => {
+      if (argv[0] === 'kill' && argv[1] === 't1') return { code: 1, stdout: '', stderr: 'gone' };
+      return { code: 0, stdout: '', stderr: '' };
+    },
+  });
+  let tree = h.view.render(h.cx);
+  nodes(tree).find((n) => n.attrs.id === 'pty-select-all').attrs.on_click({}, h.cx);
+  tree = h.view.render(h.cx);
+  nodes(tree).find((n) => n.attrs.id === 'pty-end-selected').attrs.on_click({}, h.cx);
+  tree = h.view.render(h.cx);
+  nodes(tree).find((n) => n.attrs.id === 'pty-confirm-end').attrs.on_click({}, h.cx);
+  await h.flush();
+
+  const kills = h.state.execs.filter((e) => e.cmd === 'hc' && e.argv[0] === 'kill').map((e) => e.argv[1]);
+  assert.deepEqual(kills.sort(), ['t1', 't2']);
+  const all = texts(h.view.render(h.cx));
+  assert.ok(all.some((s) => s.includes('gone')), `expected gone in ${JSON.stringify(all)}`);
+});
+
+test('End selected is disabled at 0', async () => {
+  const h = await panelHarness({
+    shared: [['orca.resources', sampleSnap()]],
+    storage: [['resources.tab', 'ptys']],
+  });
+  const tree = h.view.render(h.cx);
+  const endSel = nodes(tree).find((n) => n.attrs.id === 'pty-end-selected');
+  assert.ok(endSel);
+  assert.equal(endSel.attrs.on_click, undefined);
+});
+
+test('↗ jumps to the terminal', async () => {
+  const h = await panelHarness({
+    shared: [['orca.resources', sampleSnap()]],
+    storage: [['resources.tab', 'ptys']],
+  });
+  const tree = h.view.render(h.cx);
+  const jump = nodes(tree).find((n) => n.attrs.id === 'pty-jump-t1');
+  assert.ok(jump && jump.attrs.on_click);
+  jump.attrs.on_click({}, h.cx);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.state.runs)), [{ cmd: 'pane.focus', args: { terminal: 't1' } }]);
+});
+
+test('unfolding a row shows details', async () => {
+  const h = await panelHarness({
+    shared: [['orca.resources', sampleSnap()]],
+    storage: [['resources.tab', 'ptys']],
+    exec: (cmd, argv) => {
+      if (cmd === 'hc' && argv[0] === 'get' && argv[1] === 't1') {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            address: 't1',
+            pid: 101,
+            cwd: '/repos/herdr-orca-worktrees/wt',
+            created_ms: 1794893899127,
+            foreground: { argv: ['claude', '--resume', 'abc'] },
+          }),
+          stderr: '',
+        };
+      }
+      return { code: 0, stdout: '{}', stderr: '' };
+    },
+  });
+  const tree = h.view.render(h.cx);
+  const fold = nodes(tree).find((n) => n.attrs.id === 'pty-fold-t1');
+  assert.ok(fold && fold.attrs.on_click);
+  fold.attrs.on_click({}, h.cx);
+  await h.flush();
+
+  const all = texts(h.view.render(h.cx));
+  assert.ok(all.some((s) => s.includes('t1')), `expected t1 in ${JSON.stringify(all)}`);
+  assert.ok(all.some((s) => s.includes('claude --resume abc')), `expected argv in ${JSON.stringify(all)}`);
+});
+
+

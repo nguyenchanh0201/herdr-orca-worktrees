@@ -1,9 +1,38 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { theme, props, shared, setShared, checking, closeOverlay, run } from "herdr";
+import { theme, props, shared, setShared, checking, closeOverlay, run, exec } from "herdr";
 import { fmtMem, fmtCpu } from "./fmt.js";
 
 const CARD_W = 360;
+const SHELLS = new Set(["zsh", "bash", "fish", "sh"]);
+const AGENT_NAMES = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  antigravity: "Antigravity",
+  agy: "Antigravity",
+};
+
+function isAgentName(agent) {
+  return Boolean(agent) && !SHELLS.has(String(agent).toLowerCase());
+}
+
+function agentDisplayName(agent) {
+  const key = String(agent || "").toLowerCase();
+  return AGENT_NAMES[key] ?? agent;
+}
+
+function formatObservedTime(ms) {
+  if (!ms) return "—";
+  try {
+    return new Date(ms).toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return "—";
+  }
+}
 
 function compareItems(a, b, sort) {
   const mul = sort.dir === "asc" ? 1 : -1;
@@ -38,6 +67,12 @@ export default class OrcaResourcesPanel extends View {
 
     this.sort = { by: "mem", dir: "desc" };
     this.detailsOpen = false;
+    this.selected = new Set();
+    this.confirming = null;
+    this.ending = false;
+    this.endErrors = [];
+    this.unfoldedPtys = new Set();
+    this.ptyDetails = new Map();
 
     if (checking() || !props()?.overlay) return;
     setShared("orca.resources.open", true);
@@ -460,12 +495,398 @@ export default class OrcaResourcesPanel extends View {
       );
   }
 
-  renderPtysTab(t, _snap) {
+  allHerdrRows(snap) {
+    const rows = [];
+    for (const proj of snap?.projects ?? []) {
+      for (const wt of proj.worktrees ?? []) {
+        for (const row of wt.terminals ?? []) rows.push(row);
+      }
+    }
+    return rows;
+  }
+
+  confirmMessage(addresses, snap) {
+    const rows = this.allHerdrRows(snap);
+    const byAddr = new Map(rows.map((r) => [r.address, r]));
+    const n = addresses.length;
+    const base = `End ${n} ${n === 1 ? "terminal" : "terminals"} and their processes?`;
+    const runningAgent = addresses
+      .map((a) => byAddr.get(a)?.agent)
+      .find((ag) => isAgentName(ag));
+    return runningAgent ? `${base} One is running ${agentDisplayName(runningAgent)}.` : base;
+  }
+
+  togglePtyDetails(address, cx) {
+    if (this.unfoldedPtys.has(address)) {
+      this.unfoldedPtys.delete(address);
+      cx.notify();
+      return;
+    }
+    this.unfoldedPtys.add(address);
+    cx.notify();
+    if (this.ptyDetails.has(address)) return;
+    cx.spawn(async (cx) => {
+      try {
+        const res = await exec("hc", ["get", address, "--json"], { timeout: 5000 });
+        if (res.code === 0 && res.stdout) {
+          this.ptyDetails.set(address, JSON.parse(res.stdout));
+        }
+      } catch {}
+      cx.notify();
+    });
+  }
+
+  endTerminals(addresses, snap, cx) {
+    if (this.ending || !addresses.length) return;
+    const rows = this.allHerdrRows(snap);
+    const labelOf = new Map(rows.map((r) => [r.address, r.label]));
+    this.ending = true;
+    this.endErrors = [];
+    cx.notify();
+
+    cx.spawn(async (cx) => {
+      const queue = [...addresses];
+      const errors = [];
+      const workerCount = Math.min(4, queue.length);
+      const workers = Array.from({ length: workerCount }, async () => {
+        while (queue.length > 0) {
+          const addr = queue.shift();
+          try {
+            const res = await exec("hc", ["kill", addr], { timeout: 5000 });
+            if (res.code !== 0) {
+              const msg = (res.stderr || `exit ${res.code}`).trim();
+              errors.push(`${labelOf.get(addr) || addr}: ${msg}`);
+            }
+          } catch (err) {
+            errors.push(`${labelOf.get(addr) || addr}: ${err?.message || "failed"}`);
+          }
+        }
+      });
+      await Promise.all(workers);
+
+      this.selected.clear();
+      this.confirming = null;
+      this.ending = false;
+      this.endErrors = errors;
+      setShared("orca.resources.refresh", { at: Date.now() });
+      cx.notify();
+    });
+  }
+
+  renderPtysTab(t, snap) {
+    const projects = Array.isArray(snap?.projects) ? snap.projects : [];
+    const allRows = this.allHerdrRows(snap);
+    const count = snap?.count ?? allRows.length;
+    const validAddrs = new Set(allRows.map((r) => r.address));
+    const selectedAddrs = Array.from(this.selected).filter((a) => validAddrs.has(a));
+    const allSelected = allRows.length > 0 && selectedAddrs.length === allRows.length;
+
     return v_flex()
       .w_full()
       .flex_1()
-      .p(12)
-      .child(div().text_size(12).text_color(t.dim).child("PTYs"));
+      .overflow_hidden()
+      .child(
+        v_flex()
+          .w_full()
+          .px(12)
+          .py(10)
+          .gap(6)
+          .border_b(1)
+          .border_color(t.border)
+          .child(
+            div()
+              .text_size(12)
+              .font_bold()
+              .text_color(t.foreground)
+              .child(`${count} Herdr terminals on this computer`),
+          )
+          .child(
+            div()
+              .text_size(11)
+              .text_color(t.dim)
+              .child(`Last observed ${formatObservedTime(snap?.at)}`),
+          )
+          .child(
+            h_flex()
+              .w_full()
+              .items_center()
+              .justify_between()
+              .pt(2)
+              .child(
+                h_flex()
+                  .id("pty-select-all")
+                  .items_center()
+                  .gap(6)
+                  .cursor_pointer()
+                  .on_click((_e, cx) => {
+                    if (allSelected) this.selected.clear();
+                    else for (const r of allRows) this.selected.add(r.address);
+                    cx.notify();
+                  })
+                  .child(
+                    div()
+                      .w(14)
+                      .h(14)
+                      .rounded(3)
+                      .border(1)
+                      .border_color(allSelected ? t.accent : t.border)
+                      .bg(allSelected ? t.accent : "transparent")
+                      .flex()
+                      .items_center()
+                      .justify_center()
+                      .text_size(10)
+                      .text_color(t.foreground)
+                      .child(allSelected ? "✓" : ""),
+                  )
+                  .child(div().text_size(11).text_color(t.muted).child("Select all")),
+              )
+              .child(
+                (() => {
+                  const base = div()
+                    .id("pty-end-selected")
+                    .px(8)
+                    .py(3)
+                    .rounded(4)
+                    .border(1)
+                    .border_color(t.border)
+                    .text_size(11)
+                    .text_color(selectedAddrs.length > 0 ? t.blocked : t.dim)
+                    .bg(t.raised)
+                    .child(`End selected (${selectedAddrs.length})`);
+                  return selectedAddrs.length > 0
+                    ? base.cursor_pointer().on_click((_e, cx) => {
+                        this.confirming = selectedAddrs;
+                        cx.notify();
+                      })
+                    : base;
+                })(),
+              ),
+          ),
+      )
+      .when(Boolean(this.confirming?.length), (el) =>
+        el.child(
+          v_flex()
+            .w_full()
+            .px(12)
+            .py(8)
+            .gap(6)
+            .bg(t.raised)
+            .border_b(1)
+            .border_color(t.border)
+            .child(
+              div()
+                .text_size(11)
+                .text_color(t.foreground)
+                .child(this.confirmMessage(this.confirming, snap)),
+            )
+            .child(
+              h_flex()
+                .gap(8)
+                .justify_end()
+                .child(
+                  div()
+                    .id("pty-confirm-cancel")
+                    .px(8)
+                    .py(3)
+                    .rounded(4)
+                    .cursor_pointer()
+                    .border(1)
+                    .border_color(t.border)
+                    .text_size(11)
+                    .text_color(t.muted)
+                    .on_click((_e, cx) => {
+                      this.confirming = null;
+                      cx.notify();
+                    })
+                    .child("Cancel"),
+                )
+                .child(
+                  div()
+                    .id("pty-confirm-end")
+                    .px(8)
+                    .py(3)
+                    .rounded(4)
+                    .cursor_pointer()
+                    .bg(t.blocked)
+                    .text_size(11)
+                    .text_color(t.foreground)
+                    .on_click((_e, cx) => this.endTerminals(this.confirming, snap, cx))
+                    .child("End"),
+                ),
+            ),
+        ),
+      )
+      .when(this.endErrors.length > 0, (el) =>
+        el.child(
+          v_flex()
+            .w_full()
+            .px(12)
+            .py(6)
+            .gap(2)
+            .border_b(1)
+            .border_color(t.border)
+            .children(
+              this.endErrors.map((err) =>
+                div().text_size(11).text_color(t.blocked).child(err),
+              ),
+            ),
+        ),
+      )
+      .child(
+        v_flex()
+          .w_full()
+          .flex_1()
+          .overflow_y_scroll()
+          .children(
+            projects.map((proj) => {
+              const projCount = (proj.worktrees ?? []).reduce(
+                (s, w) => s + (w.terminals?.length ?? 0),
+                0,
+              );
+              return v_flex()
+                .w_full()
+                .child(
+                  h_flex()
+                    .w_full()
+                    .px(12)
+                    .py(6)
+                    .items_center()
+                    .justify_between()
+                    .child(
+                      div()
+                        .text_size(11)
+                        .font_bold()
+                        .text_color(t.muted)
+                        .child(proj.name.toUpperCase()),
+                    )
+                    .child(div().text_size(11).text_color(t.dim).child(String(projCount))),
+                )
+                .children(
+                  (proj.worktrees ?? []).map((wt) =>
+                    v_flex()
+                      .w_full()
+                      .child(
+                        h_flex()
+                          .w_full()
+                          .pl(20)
+                          .pr(12)
+                          .py(4)
+                          .items_center()
+                          .justify_between()
+                          .child(div().text_size(11).text_color(t.muted).child(wt.name))
+                          .child(div().text_size(11).text_color(t.dim).child(String(wt.terminals?.length ?? 0))),
+                      )
+                      .children(
+                        (wt.terminals ?? []).map((row) => {
+                          const checked = this.selected.has(row.address);
+                          const unfolded = this.unfoldedPtys.has(row.address);
+                          const detail = this.ptyDetails.get(row.address);
+                          const argvStr = Array.isArray(detail?.foreground?.argv)
+                            ? detail.foreground.argv.join(" ")
+                            : "";
+                          return v_flex()
+                            .w_full()
+                            .child(
+                              h_flex()
+                                .w_full()
+                                .pl(24)
+                                .pr(12)
+                                .py(4)
+                                .items_center()
+                                .gap(6)
+                                .hover((s) => s.bg(t.hover))
+                                .child(
+                                  div()
+                                    .id(`pty-check-${row.address}`)
+                                    .w(14)
+                                    .h(14)
+                                    .flex_none()
+                                    .rounded(3)
+                                    .border(1)
+                                    .border_color(checked ? t.accent : t.border)
+                                    .bg(checked ? t.accent : "transparent")
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(10)
+                                    .text_color(t.foreground)
+                                    .on_click((_e, cx) => {
+                                      if (checked) this.selected.delete(row.address);
+                                      else this.selected.add(row.address);
+                                      cx.notify();
+                                    })
+                                    .child(checked ? "✓" : ""),
+                                )
+                                .child(
+                                  div()
+                                    .id(`pty-fold-${row.address}`)
+                                    .px(2)
+                                    .cursor_pointer()
+                                    .text_size(11)
+                                    .text_color(t.dim)
+                                    .on_click((_e, cx) => this.togglePtyDetails(row.address, cx))
+                                    .child(unfolded ? "▾" : "›"),
+                                )
+                                .child(
+                                  div()
+                                    .flex_1()
+                                    .text_size(12)
+                                    .text_color(t.foreground)
+                                    .child(row.label),
+                                )
+                                .child(
+                                  div()
+                                    .id(`pty-jump-${row.address}`)
+                                    .px(4)
+                                    .cursor_pointer()
+                                    .text_size(11)
+                                    .text_color(t.muted)
+                                    .hover((s) => s.text_color(t.foreground))
+                                    .on_click(() => run("pane.focus", { terminal: row.address }))
+                                    .child("↗"),
+                                )
+                                .child(
+                                  div()
+                                    .id(`pty-end-${row.address}`)
+                                    .px(6)
+                                    .py(2)
+                                    .rounded(4)
+                                    .cursor_pointer()
+                                    .text_size(11)
+                                    .text_color(t.blocked)
+                                    .hover((s) => s.bg(t.selected))
+                                    .on_click((_e, cx) => {
+                                      this.confirming = [row.address];
+                                      cx.notify();
+                                    })
+                                    .child("End"),
+                                ),
+                            )
+                            .when(unfolded, (el) =>
+                              el.child(
+                                v_flex()
+                                  .pl(46)
+                                  .pr(12)
+                                  .pb(6)
+                                  .gap(2)
+                                  .text_size(11)
+                                  .text_color(t.dim)
+                                  .child(`Address: ${row.address} · PID: ${detail?.pid ?? row.pid ?? "—"}`)
+                                  .when(Boolean(detail?.cwd), (d) => d.child(`Folder: ${detail.cwd}`))
+                                  .when(Boolean(argvStr), (d) => d.child(`Program: ${argvStr}`))
+                                  .when(Boolean(detail?.created_ms), (d) =>
+                                    d.child(`Started: ${formatObservedTime(detail.created_ms)}`),
+                                  ),
+                              ),
+                            );
+                        }),
+                      ),
+                  ),
+                );
+            }),
+          ),
+      );
   }
 
   render() {
