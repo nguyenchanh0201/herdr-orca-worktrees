@@ -404,8 +404,11 @@ export default class OrcaUsagePanel extends View {
     const selectedProvider =
       available.find((p) => p.id === this.selected) ?? available[0] ?? null;
 
+    // A popup sizes to its content and opens upward from the strip: a height that changed with the
+    // selected card moved the rows under the pointer, so hover flipped selection every frame.
     return h_flex()
-      .size_full()
+      .w_full()
+      .h(400)
       .bg(t.popover)
       .text_size(12)
       .text_color(t.foreground)
