@@ -272,3 +272,176 @@ test('chip text and click', async () => {
   assert.equal(h.state.overlays.length, 1);
   assert.equal(h.state.overlays[0].open.mod, 'orca-resources-panel');
 });
+
+async function panelHarness(opts = {}) {
+  const storage = new Map(opts.storage ?? []);
+  const state = {
+    shared: new Map(opts.shared ?? []),
+    execs: [],
+    runs: [],
+    overlays: [],
+    notices: 0,
+    storage,
+  };
+  const pending = [];
+  const cx = {
+    notify() { state.notices++; },
+    stop_propagation() {},
+    spawn(fn) { pending.push(Promise.resolve().then(() => fn(cx))); },
+    timer: { every() {} },
+  };
+  const context = {
+    ...await import('../mods/orca-resources-panel/fmt.js'),
+    View: class {},
+    div: () => element('div'),
+    svg: (p) => element('svg', p),
+    h_flex: () => element('h_flex'),
+    v_flex: () => element('v_flex'),
+    shared: (k) => state.shared.get(k),
+    setShared: (k, v) => state.shared.set(k, v),
+    checking: () => false,
+    run: (cmd, args) => state.runs.push({ cmd, args }),
+    openOverlay: (spec) => state.overlays.push({ open: JSON.parse(JSON.stringify(spec)) }),
+    closeOverlay: (id) => state.overlays.push({ close: id }),
+    props: () => ({ overlay: 'ov-1', height: 500 }),
+    localStorage: {
+      getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+      setItem: (k, v) => storage.set(k, String(v)),
+    },
+    theme: () => ({
+      foreground: 'c-fg', muted: 'c-muted', dim: 'c-dim', border: 'c-border',
+      hover: 'c-hover', selected: 'c-selected', working: 'c-working', blocked: 'c-blocked',
+      popover: 'c-popover', raised: 'c-raised', accent: 'c-accent', background: 'c-bg',
+    }),
+    exec: async (cmd, argv, options) => {
+      assert.notEqual(cmd, 'orca');
+      assert.ok(!String(cmd).includes('Orca.app'));
+      for (const a of argv ?? []) assert.ok(!String(a).includes('Orca.app'));
+      state.execs.push({ cmd, argv: argv ?? [], options });
+      return opts.exec ? opts.exec(cmd, argv ?? [], options) : { code: 0, stdout: '{}', stderr: '' };
+    },
+    Date,
+  };
+  const source = fs.readFileSync(require.resolve('../mods/orca-resources-panel/main.js'), 'utf8')
+    .replace(/^import\b[\s\S]*?;\n/gm, '')
+    .replace('export default class OrcaResourcesPanel', 'class OrcaResourcesPanel');
+  vm.runInNewContext(`${source}\nthis.Mod = OrcaResourcesPanel;`, context);
+  const view = new context.Mod();
+  view.init({}, cx);
+  return {
+    view,
+    cx,
+    state,
+    async flush() {
+      while (pending.length) await Promise.all(pending.splice(0));
+    },
+  };
+}
+
+function sampleSnap() {
+  return {
+    at: 1794911400000,
+    cpu: 3.5,
+    rss: 2296381, // 2.19 GB
+    count: 2,
+    herdr: { cpu: 0.5, rss: 102400 },
+    herdrHistory: [102400, 102400],
+    history: { '/repos/herdr-orca-worktrees/wt': [500000, 700000] },
+    other: [],
+    projects: [
+      {
+        key: '/repos/herdr-orca-worktrees',
+        name: 'herdr-orca-worktrees',
+        cpu: 3.0,
+        rss: 2193981,
+        worktrees: [
+          {
+            key: '/repos/herdr-orca-worktrees/wt',
+            name: 'feat/projects-sidebar',
+            cpu: 3.0,
+            rss: 2193981,
+            terminals: [
+              { address: 't1', pid: 101, label: 'small-mem-high-cpu', agent: 'claude-code', cpu: 2.5, rss: 500000 },
+              { address: 't2', pid: 102, label: 'big-mem-low-cpu', agent: 'zsh', cpu: 0.5, rss: 1693981 },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+test('fmt copies agree', async () => {
+  const t = await import('../mods/orca-resources/tree.js');
+  const f = await import('../mods/orca-resources-panel/fmt.js');
+  for (const kb of [0, 512, 738099, 1048575, 1048576, 1121976]) {
+    assert.equal(f.fmtMem(kb), t.fmtMem(kb));
+  }
+  for (const cpu of [0, 2.44, 105.67]) {
+    assert.equal(f.fmtCpu(cpu), t.fmtCpu(cpu));
+  }
+});
+
+test('header, tabs and summary', async () => {
+  const snap = sampleSnap();
+  const h = await panelHarness({ shared: [['orca.resources', snap]] });
+  const tree = h.view.render(h.cx);
+  const all = texts(tree);
+  for (const expected of ['Resource Manager', 'Refresh', 'Resources', 'PTYs', '3.5%', '2.19 GB', 'Σ RSS']) {
+    assert.ok(all.includes(expected), `expected ${expected} in ${JSON.stringify(all)}`);
+  }
+});
+
+test('rows nest project, worktree, terminal, sorted by mem', async () => {
+  const snap = sampleSnap();
+  const h = await panelHarness({ shared: [['orca.resources', snap]] });
+  const all = texts(h.view.render(h.cx));
+  const iProj = all.indexOf('HERDR-ORCA-WORKTREES');
+  const iWt = all.indexOf('feat/projects-sidebar');
+  const iBig = all.indexOf('big-mem-low-cpu');
+  const iSmall = all.indexOf('small-mem-high-cpu');
+  const iHerdr = all.indexOf('Herdr');
+  assert.ok(iProj >= 0 && iWt > iProj && iBig > iWt && iSmall > iBig && iHerdr > iSmall, `bad order: ${JSON.stringify(all)}`);
+  assert.ok(!all.includes('Herdr.app & herdr-core'));
+});
+
+test('clicking CPU header sorts by cpu', async () => {
+  const snap = sampleSnap();
+  const h = await panelHarness({ shared: [['orca.resources', snap]] });
+  let tree = h.view.render(h.cx);
+  const cpuHeader = nodes(tree).find((n) => n.attrs.id === 'sort-cpu');
+  assert.ok(cpuHeader && cpuHeader.attrs.on_click);
+  cpuHeader.attrs.on_click({}, h.cx);
+  tree = h.view.render(h.cx);
+  const all = texts(tree);
+  assert.ok(all.indexOf('small-mem-high-cpu') < all.indexOf('big-mem-low-cpu'));
+});
+
+test('clicking a terminal row focuses it', async () => {
+  const snap = sampleSnap();
+  const h = await panelHarness({ shared: [['orca.resources', snap]] });
+  const tree = h.view.render(h.cx);
+  const row = nodes(tree).find((n) => n.attrs.id === 'res-term-t1');
+  assert.ok(row && row.attrs.on_click);
+  row.attrs.on_click({}, h.cx);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.state.runs)), [{ cmd: 'pane.focus', args: { terminal: 't1' } }]);
+});
+
+test('Metric details unfolds the explanation', async () => {
+  const snap = sampleSnap();
+  const h = await panelHarness({ shared: [['orca.resources', snap]] });
+  let tree = h.view.render(h.cx);
+  assert.ok(!texts(tree).some((s) => s.includes('%cpu')));
+  const fold = nodes(tree).find((n) => n.attrs.id === 'metric-details-toggle');
+  assert.ok(fold && fold.attrs.on_click);
+  fold.attrs.on_click({}, h.cx);
+  const all = texts(h.view.render(h.cx));
+  assert.ok(all.some((s) => s.includes('%cpu')));
+  assert.ok(all.some((s) => s.includes('RSS')));
+});
+
+test('open flag', async () => {
+  const h = await panelHarness({ shared: [['orca.resources', sampleSnap()]] });
+  assert.equal(h.state.shared.get('orca.resources.open'), true);
+});
+
