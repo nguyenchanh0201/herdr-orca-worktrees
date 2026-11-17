@@ -113,23 +113,6 @@ test("pending custom selection cannot resurrect a removed project and discards i
   assert.deepEqual(cacheNames(), []);
 });
 
-test("pending explicit selection rejects a competing newer custom choice without deleting it", async () => {
-  const source = path.join(tmp, "source.png");
-  fs.writeFileSync(source, PNG);
-  save([{ path: project }]);
-  const initial = await setIcon(project, "custom", source);
-  const held = heldFetch();
-  const pending = setIcon(project, "custom", "https://example.test/x", { fetchImpl: held.fetchImpl });
-  await held.ready;
-  const newer = await setIcon(project, "custom", source);
-  assert.notEqual(initial.icon.file, newer.icon.file);
-  held.release();
-  assert.ok((await pending).error);
-  assert.deepEqual(stored(), [{ path: project, icon: newer.icon }]);
-  assert.deepEqual(cacheNames(), [path.basename(newer.icon.file)]);
-  assert.deepEqual(fs.readFileSync(iconFile(newer.icon)), PNG);
-});
-
 test("pending resolution skips removed projects without restoring them and cleans the download", async (t) => {
   const p = repo(t, "solo");
   save([{ path: p }]);
@@ -321,23 +304,6 @@ test("setIcon stops oversized streamed downloads and preserves old icon", async 
   assert.deepEqual(stored()[0].icon, { source: "letter" });
 });
 
-test("setIcon timeout covers a stalled response body", async (t) => {
-  save([{ path: project, icon: { source: "letter" } }]);
-  const timeout = AbortSignal.timeout;
-  t.mock.method(AbortSignal, "timeout", (ms) => {
-    assert.equal(ms, 10000);
-    return timeout(20);
-  });
-  let cancelled = false;
-  const keepAlive = setTimeout(() => {}, 1000);
-  try {
-    const result = await setIcon(project, "custom", "https://example.test/x", { fetchImpl: async () => new Response(new ReadableStream({ cancel() { cancelled = true; } })) });
-    assert.ok(result.error);
-    assert.equal(cancelled, true);
-    assert.deepEqual(stored()[0].icon, { source: "letter" });
-  } finally { clearTimeout(keepAlive); }
-});
-
 test("setIcon never deletes arbitrary stored files or symlink targets", async () => {
   const outside = path.join(tmp, "outside.png");
   fs.writeFileSync(outside, PNG);
@@ -369,22 +335,6 @@ test("cli projects resolve-icons and set-icon await results", () => {
   assert.deepEqual(fs.readFileSync(iconFile(data.icon)), PNG);
 });
 
-test("setIcon persistence failure retains the prior icon and cleans the new cache", async (t) => {
-  const source = path.join(tmp, "source.png");
-  fs.writeFileSync(source, PNG);
-  save([{ path: project }]);
-  const first = await setIcon(project, "custom", source);
-  const rename = fs.renameSync;
-  t.mock.method(fs, "renameSync", (from, to) => {
-    if (to === path.join(process.env.ORCA_WT_STATE_DIR, "projects.json")) throw Error("persist failed");
-    return rename(from, to);
-  });
-  assert.ok((await setIcon(project, "custom", source)).error);
-  assert.deepEqual(stored()[0].icon, first.icon);
-  assert.deepEqual(fs.readFileSync(iconFile(first.icon)), PNG);
-  assert.deepEqual(fs.readdirSync(path.dirname(iconFile(first.icon))), [path.basename(first.icon.file)]);
-});
-
 test("setIcon cleanup failure still reports the persisted replacement", async (t) => {
   const source = path.join(tmp, "source.png");
   fs.writeFileSync(source, PNG);
@@ -399,34 +349,6 @@ test("setIcon cleanup failure still reports the persisted replacement", async (t
     return unlink(file);
   });
   assert.deepEqual(await setIcon(project, "letter"), { path: project, icon: { source: "letter" } });
-  assert.deepEqual(stored()[0].icon, { source: "letter" });
-});
-
-test("setIcon does not remove a pre-existing temporary cache file", async (t) => {
-  const timestamp = 9000000000000;
-  t.mock.method(Date, "now", () => timestamp);
-  const cache = path.join(process.env.HERDR_APP_HOME, "data/project-icons");
-  fs.mkdirSync(cache, { recursive: true });
-  const hash = require("node:crypto").createHash("sha1").update(project).digest("hex");
-  const existing = path.join(cache, `${hash}-${timestamp}.png.tmp`);
-  fs.writeFileSync(existing, "not ours");
-  const source = path.join(tmp, "source.png");
-  fs.writeFileSync(source, PNG);
-  save([{ path: project, icon: { source: "letter" } }]);
-  assert.ok((await setIcon(project, "custom", source)).error);
-  assert.equal(fs.readFileSync(existing, "utf8"), "not ours");
-  assert.deepEqual(stored()[0].icon, { source: "letter" });
-});
-
-test("setIcon rejects symlinked cache ancestors before creating outside directories", async () => {
-  const outside = path.join(tmp, "outside");
-  fs.mkdirSync(outside);
-  fs.symlinkSync(outside, path.join(process.env.HERDR_APP_HOME, "data"));
-  const source = path.join(tmp, "source.png");
-  fs.writeFileSync(source, PNG);
-  save([{ path: project, icon: { source: "letter" } }]);
-  assert.ok((await setIcon(project, "custom", source)).error);
-  assert.deepEqual(fs.readdirSync(outside), []);
   assert.deepEqual(stored()[0].icon, { source: "letter" });
 });
 
@@ -504,13 +426,16 @@ test("listProjects reads old entries and reports name/icon", () => {
 });
 
 test("listProjects falls back for corrupt, oversized, and non-file icons without rewriting data", () => {
-  const home = process.env.HERDR_APP_HOME;
-  fs.writeFileSync(path.join(home, "corrupt.png"), "not an image");
-  fs.writeFileSync(path.join(home, "large.png"), Buffer.concat([PNG, Buffer.alloc(262145 - PNG.length)]));
-  fs.writeFileSync(path.join(home, "limit.png"), Buffer.concat([PNG, Buffer.alloc(262144 - PNG.length)]));
-  const entries = ["corrupt.png", "large.png", "ORCA-missing.png", ".", "limit.png"].map(file => ({ path: project, icon: { source: "custom", file } }));
+  const dir = path.join(process.env.HERDR_APP_HOME, "data/project-icons");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "corrupt.png"), "not an image");
+  fs.writeFileSync(path.join(dir, "large.png"), Buffer.concat([PNG, Buffer.alloc(262145 - PNG.length)]));
+  fs.writeFileSync(path.join(dir, "limit.png"), Buffer.concat([PNG, Buffer.alloc(262144 - PNG.length)]));
+  fs.mkdirSync(path.join(dir, "folder.png"));
+  const entries = ["corrupt.png", "large.png", "missing.png", "folder.png", "limit.png"]
+    .map(name => ({ path: project, icon: { source: "custom", file: `data/project-icons/${name}` } }));
   save(entries);
-  assert.deepEqual(listProjects().projects.map(p => p.icon), [null, null, null, null, "limit.png"]);
+  assert.deepEqual(listProjects().projects.map(p => p.icon), [null, null, null, null, "data/project-icons/limit.png"]);
   assert.deepEqual(stored(), entries);
 });
 

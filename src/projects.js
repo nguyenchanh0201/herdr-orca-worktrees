@@ -5,7 +5,6 @@ const { spawnSync } = require("node:child_process");
 const { gitInfo } = require("./git-info");
 const YAML = require("yaml");
 const { createHash } = require("node:crypto");
-const { isDeepStrictEqual } = require("node:util");
 
 function herdrHome() {
   return process.env.HERDR_APP_HOME || path.join(os.homedir(), ".config", "herdr-app");
@@ -63,16 +62,12 @@ function githubLogins() {
 }
 
 function savedIconFile(icon) {
-  if (!icon || icon.source === "letter" || typeof icon.file !== "string" || path.isAbsolute(icon.file)) return null;
+  if (!icon || icon.source === "letter" || typeof icon.file !== "string") return null;
+  // Stored data: only accept files inside the icon cache.
+  if (!/^data\/project-icons\/[^/]+$/.test(icon.file)) return null;
   try {
-    const home = fs.realpathSync(herdrHome());
-    const file = fs.realpathSync(path.join(home, icon.file));
-    const relative = path.relative(home, file);
-    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
-    const stat = fs.statSync(file);
-    if (!stat.isFile() || stat.size > 262144) return null;
-    const bytes = fs.readFileSync(file);
-    return bytes.length <= 262144 && sniffImage(bytes) ? icon.file : null;
+    const bytes = fs.readFileSync(path.join(herdrHome(), icon.file));
+    return bytes.length <= MAX_ICON_BYTES && sniffImage(bytes) ? icon.file : null;
   } catch {
     return null;
   }
@@ -175,85 +170,45 @@ function projectOwner(targetPath) {
 }
 
 async function downloadIcon(url, fetchImpl, avatar = false) {
-  const signal = AbortSignal.timeout(10000);
-  let reader;
-  let onAbort;
-  const aborted = new Promise((_, reject) => {
-    onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-  try {
-    const response = await Promise.race([fetchImpl(url, { signal }), aborted]);
-    if (!response.ok || !response.body) throw new Error("Icon download failed");
-    reader = response.body.getReader();
-    const declared = Number(response.headers.get("content-length"));
-    if (declared > MAX_ICON_BYTES) throw new Error("Icon exceeds 262144 bytes");
-    const chunks = [];
-    let size = 0;
-    while (true) {
-      const { done, value } = await Promise.race([reader.read(), aborted]);
-      if (done) break;
-      size += value.byteLength;
-      if (size > MAX_ICON_BYTES) throw new Error("Icon exceeds 262144 bytes");
-      chunks.push(Buffer.from(value));
-    }
-    const bytes = Buffer.concat(chunks, size);
-    const ext = sniffImage(bytes);
-    if (!ext || (avatar && ext === "webp")) throw new Error("Not a supported image");
-    return bytes;
-  } finally {
-    signal.removeEventListener("abort", onAbort);
-    if (reader) reader.cancel().catch(() => {});
+  const response = await fetchImpl(url, { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new Error("Icon download failed");
+  if (Number(response.headers.get("content-length")) > MAX_ICON_BYTES) throw new Error("Icon exceeds 262144 bytes");
+  // Read in chunks so an endless or huge body stops at the cap instead of filling memory.
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of response.body ?? []) {
+    size += chunk.byteLength;
+    if (size > MAX_ICON_BYTES) throw new Error("Icon exceeds 262144 bytes");
+    chunks.push(Buffer.from(chunk));
   }
+  const bytes = Buffer.concat(chunks, size);
+  const ext = sniffImage(bytes);
+  if (!ext || (avatar && ext === "webp")) throw new Error("Not a supported image");
+  return bytes;
 }
 
 function iconCache() {
-  fs.mkdirSync(herdrHome(), { recursive: true });
-  const home = fs.realpathSync(herdrHome());
-  let directory = home;
-  for (const name of ["data", "project-icons"]) {
-    directory = path.join(directory, name);
-    try { fs.mkdirSync(directory); } catch (error) { if (error.code !== "EEXIST") throw error; }
-    if (fs.realpathSync(directory) !== directory || !fs.lstatSync(directory).isDirectory()) {
-      throw new Error("Icon cache must not be a symlink");
-    }
-  }
-  return directory;
+  const dir = path.join(herdrHome(), "data", "project-icons");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 function writeIcon(targetPath, source, bytes) {
-  const cache = iconCache();
+  // Unique per write even within one millisecond, so replacing never deletes the new file.
   lastIconVersion = Math.max(Date.now(), lastIconVersion + 1);
-  let name = `${projectHash(targetPath)}-${lastIconVersion}.${sniffImage(bytes)}`;
-  while (fs.existsSync(path.join(cache, name))) {
-    name = `${projectHash(targetPath)}-${++lastIconVersion}.${sniffImage(bytes)}`;
-  }
-  const file = path.join(cache, name);
-  const tmp = `${file}.tmp`;
-  // Both absolute targets are constructed under the verified managed cache, never from stored paths.
-  const fd = fs.openSync(tmp, "wx");
-  try {
-    try { fs.writeFileSync(fd, bytes); } finally { fs.closeSync(fd); }
-    fs.renameSync(tmp, file);
-  } catch (error) {
-    try { fs.unlinkSync(tmp); } catch {}
-    throw error;
-  }
+  const name = `${projectHash(targetPath)}-${lastIconVersion}.${sniffImage(bytes)}`;
+  const file = path.join(iconCache(), name);
+  fs.writeFileSync(`${file}.tmp`, bytes);
+  fs.renameSync(`${file}.tmp`, file);
   return { source, file: `data/project-icons/${name}` };
 }
 
 function removeManagedIcon(targetPath, icon) {
-  // Stored metadata is untrusted: only this project's versioned, non-symlink cache files qualify.
-  try {
-    if (typeof icon?.file !== "string") return;
-    const name = path.basename(icon.file);
-    if (!new RegExp(`^${projectHash(targetPath)}-\\d+\\.(png|jpeg|webp)$`).test(name)) return;
-    if (icon.file !== `data/project-icons/${name}`) return;
-    const cache = iconCache();
-    const file = path.resolve(cache, name);
-    if (fs.realpathSync(file) !== file || !fs.lstatSync(file).isFile()) return;
-    fs.unlinkSync(file);
-  } catch { /* Cleanup cannot undo or misreport an already persisted choice. */ }
+  // Stored data: only delete this project's own cache files.
+  const name = typeof icon?.file === "string" ? path.basename(icon.file) : "";
+  if (icon?.file !== `data/project-icons/${name}`) return;
+  if (!new RegExp(`^${projectHash(targetPath)}-\\d+\\.(png|jpeg|webp)$`).test(name)) return;
+  try { fs.unlinkSync(path.join(iconCache(), name)); } catch {}
 }
 
 async function iconFromSource(targetPath, source, value, fetchImpl) {
@@ -280,21 +235,21 @@ async function setIcon(targetPath, source, value, { fetchImpl = fetch } = {}) {
   const entry = state.projects.find(p => p.path === targetPath);
   if (!entry) return { error: "Project is not saved" };
   let icon;
-  const previous = entry.icon;
   try {
     icon = await iconFromSource(targetPath, source, value, fetchImpl);
-    // Downloads can overlap user edits; reconcile immediately before the synchronous commit.
-    const latest = readProjectsFile();
-    if (latest.error) throw new Error(latest.error);
-    const current = latest.projects.find(p => p.path === targetPath);
-    if (!current) throw new Error("Project is not saved");
-    if (!isDeepStrictEqual(current.icon, previous)) throw new Error("Project icon changed while loading; try again");
-    current.icon = icon;
-    writeProjectsAtomic(latest.projects);
   } catch (error) {
-    if (icon) removeManagedIcon(targetPath, icon);
     return { error: error.message || String(error) };
   }
+  // Re-read after the download so a rename made meanwhile is kept.
+  const latest = readProjectsFile();
+  const current = latest.projects?.find(p => p.path === targetPath);
+  if (!current) {
+    removeManagedIcon(targetPath, icon);
+    return { error: latest.error || "Project is not saved" };
+  }
+  const previous = current.icon;
+  current.icon = icon;
+  writeProjectsAtomic(latest.projects);
   removeManagedIcon(targetPath, previous);
   return { path: targetPath, icon };
 }
@@ -318,25 +273,21 @@ async function resolveIcons({ fetchImpl = fetch } = {}) {
     } catch { return null; /* Leave unresolved downloads retryable. */ }
   }));
   if (changes.some(Boolean)) {
-    try {
-      const latest = readProjectsFile();
-      if (latest.error) throw new Error(latest.error);
-      let changed = false;
-      for (const change of changes) {
-        if (!change) continue;
-        const current = latest.projects.find(p => p.path === change.path);
-        if (!current || current.icon) {
-          removeManagedIcon(change.path, change.icon);
-          continue;
-        }
-        current.icon = change.icon;
-        changed = true;
+    // Re-read after the downloads so edits made meanwhile are kept.
+    const latest = readProjectsFile();
+    if (latest.error) return { error: latest.error };
+    let changed = false;
+    for (const change of changes) {
+      if (!change) continue;
+      const current = latest.projects.find(p => p.path === change.path);
+      if (!current || current.icon) {
+        removeManagedIcon(change.path, change.icon);
+        continue;
       }
-      if (changed) writeProjectsAtomic(latest.projects);
-    } catch (error) {
-      for (const change of changes) if (change) removeManagedIcon(change.path, change.icon);
-      return { error: error.message || String(error) };
+      current.icon = change.icon;
+      changed = true;
     }
+    if (changed) writeProjectsAtomic(latest.projects);
   }
   return listProjects();
 }
