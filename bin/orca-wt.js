@@ -55,6 +55,10 @@ function handleProjects(args) {
       return projects.listProjects();
     case "rename":
       return projects.renameProject(rest[0], rest.slice(1).join(" "));
+    case "resolve-icons":
+      return projects.resolveIcons();
+    case "set-icon":
+      return projects.setIcon(rest[0], rest[1], rest[2]);
     case "logins":
       return { logins: projects.githubLogins() };
     case "add":
@@ -118,7 +122,7 @@ async function main() {
       result = commands.remove(target, { force });
       break;
     case "projects":
-      result = handleProjects(rest);
+      result = await handleProjects(rest);
       break;
     case "sleep":
       result = handleSleep(rest);

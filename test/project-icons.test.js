@@ -6,9 +6,10 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const {
   herdrHome, ownerFromRemote, sniffImage, REPO_ICON_CANDIDATES,
-  listProjects, renameProject, githubLogins,
+  listProjects, renameProject, githubLogins, resolveIcons, setIcon,
 } = require("../src/projects");
 
+const { makeRepo } = require("./helpers/repo");
 const CLI = path.resolve(__dirname, "../bin/orca-wt.js");
 // A complete 1×1 PNG, not merely a filename or an empty file.
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=", "base64");
@@ -44,6 +45,305 @@ test.afterEach(() => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+});
+
+function repo(t, owner, files = {}) {
+  const r = makeRepo({ files });
+  t.after(() => r.cleanup());
+  if (owner) {
+    const result = spawnSync("git", ["-C", r.primary, "remote", "add", "origin", `git@github.com:${owner}/x.git`], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  }
+  return r.primary;
+}
+function iconFile(icon) { return path.join(process.env.HERDR_APP_HOME, icon.file || icon); }
+function noFetch() { assert.fail("unexpected network request"); }
+
+// Removing source selection, size validation, or persist-before-cleanup must break these behaviors.
+test("resolveIcons prefers a repo icon", async (t) => {
+  const p = repo(t, "solo", { "public/logo.png": PNG });
+  save([{ path: p, name: "Keep", future: { keep: true } }]);
+  const result = await resolveIcons({ fetchImpl: noFetch });
+  assert.equal(result.projects[0].iconSource, "repo");
+  assert.deepEqual(fs.readFileSync(iconFile(result.projects[0].icon)), PNG);
+  assert.match(result.projects[0].icon, /^data\/project-icons\/[a-f0-9]{40}-\d+\.png$/);
+  assert.deepEqual(stored()[0].future, { keep: true });
+  assert.equal(stored()[0].name, "Keep");
+});
+
+test("resolveIcons uses the avatar for a unique owner", async (t) => {
+  save([{ path: repo(t, "solo") }]);
+  let calls = 0;
+  const result = await resolveIcons({ fetchImpl: async (url, options) => {
+    calls++;
+    assert.equal(url, "https://github.com/solo.png?size=64");
+    assert.ok(options.signal instanceof AbortSignal);
+    return new Response(PNG);
+  } });
+  assert.equal(calls, 1);
+  assert.equal(result.projects[0].iconSource, "github");
+  assert.deepEqual(fs.readFileSync(iconFile(result.projects[0].icon)), PNG);
+});
+
+test("resolveIcons skips a shared owner including resolved entries", async (t) => {
+  const a = repo(t, "CODUCT"), b = repo(t, "coduct");
+  save([{ path: a }, { path: b }]);
+  assert.deepEqual((await resolveIcons({ fetchImpl: noFetch })).projects.map(p => p.iconSource), ["letter", "letter"]);
+  save([{ path: a }, { path: b, icon: { source: "custom", file: "missing.png" } }]);
+  assert.deepEqual((await resolveIcons({ fetchImpl: noFetch })).projects.map(p => p.iconSource), ["letter", "custom"]);
+});
+
+test("resolveIcons leaves icon unset when the fetch fails and retries", async (t) => {
+  save([{ path: repo(t, "solo") }]);
+  assert.equal((await resolveIcons({ fetchImpl: async () => { throw Error("offline"); } })).projects[0].iconSource, null);
+  assert.equal(Object.hasOwn(stored()[0], "icon"), false);
+  assert.equal((await resolveIcons({ fetchImpl: async () => new Response(PNG) })).projects[0].iconSource, "github");
+});
+
+test("resolveIcons stores letter with no remote and no file", async (t) => {
+  save([{ path: repo(t) }]);
+  assert.equal((await resolveIcons({ fetchImpl: noFetch })).projects[0].iconSource, "letter");
+  assert.deepEqual(stored()[0].icon, { source: "letter" });
+});
+
+test("resolveIcons does not touch resolved entries", async (t) => {
+  const entries = ["letter", "repo", "github", "custom"].map(source => ({ path: repo(t, source), icon: { source }, extra: true }));
+  save(entries);
+  await resolveIcons({ fetchImpl: noFetch });
+  assert.deepEqual(stored(), entries);
+});
+
+test("resolveIcons rejects a non-image avatar", async (t) => {
+  save([{ path: repo(t, "solo") }]);
+  assert.equal((await resolveIcons({ fetchImpl: async () => new Response("<html>") })).projects[0].iconSource, null);
+  assert.equal(Object.hasOwn(stored()[0], "icon"), false);
+});
+
+test("resolveIcons skips invalid and oversized repo candidates in order", async (t) => {
+  const webp = Buffer.from("RIFF\0\0\0\0WEBP");
+  const p = repo(t, null, { "favicon.png": "bad", "favicon.webp": Buffer.alloc(262145), "public/favicon.png": PNG, "public/favicon.webp": webp });
+  save([{ path: p }]);
+  const result = await resolveIcons({ fetchImpl: noFetch });
+  assert.equal(result.projects[0].iconSource, "repo");
+  assert.deepEqual(fs.readFileSync(iconFile(result.projects[0].icon)), PNG);
+});
+
+test("resolveIcons starts independent avatar fetches in parallel", async (t) => {
+  save([{ path: repo(t, "one") }, { path: repo(t, "two") }]);
+  let release;
+  const barrier = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  const result = await resolveIcons({ fetchImpl: async () => {
+    if (++calls === 2) release();
+    await barrier;
+    return new Response(PNG);
+  } });
+  assert.deepEqual(result.projects.map(p => p.iconSource), ["github", "github"]);
+});
+
+test("setIcon custom from file replaces the old file even in the same millisecond", async () => {
+  const source = path.join(tmp, "source.png");
+  fs.writeFileSync(source, PNG);
+  save([{ path: project, name: "Keep", future: 42 }]);
+  const now = Date.now;
+  Date.now = () => 1700000000000;
+  try {
+    const first = await setIcon(project, "custom", source);
+    const second = await setIcon(project, "custom", source);
+    assert.equal(first.icon.source, "custom");
+    assert.notEqual(first.icon.file, second.icon.file);
+    assert.equal(fs.existsSync(iconFile(first.icon)), false);
+    assert.deepEqual(fs.readFileSync(iconFile(second.icon)), PNG);
+    assert.deepEqual(fs.readFileSync(source), PNG);
+    assert.deepEqual(stored(), [{ path: project, name: "Keep", future: 42, icon: second.icon }]);
+  } finally { Date.now = now; }
+});
+
+test("setIcon letter removes only the replaced managed cache", async () => {
+  fs.writeFileSync(path.join(tmp, "source.png"), PNG);
+  save([{ path: project }]);
+  const first = await setIcon(project, "custom", path.join(tmp, "source.png"));
+  assert.deepEqual(await setIcon(project, "letter"), { path: project, icon: { source: "letter" } });
+  assert.equal(fs.existsSync(iconFile(first.icon)), false);
+});
+
+test("setIcon on an unsaved path errors without fetching", async () => {
+  save([]);
+  assert.ok((await setIcon(project, "custom", "https://example.test/icon", { fetchImpl: noFetch })).error);
+  assert.deepEqual(stored(), []);
+});
+
+test("setIcon source failures keep old icon metadata and bytes", async (t) => {
+  const p = repo(t, null);
+  const source = path.join(tmp, "source.png"), large = path.join(tmp, "large.png");
+  fs.writeFileSync(source, PNG);
+  fs.writeFileSync(large, Buffer.alloc(300 * 1024));
+  save([{ path: p }]);
+  const first = await setIcon(p, "custom", source);
+  const before = stored();
+  for (const [kind, value, fetchImpl] of [
+    ["unknown"], ["custom"], ["custom", large], ["custom", path.join(tmp, "missing")],
+    ["repo"], ["github"], ["custom", "https://example.test/x", async () => { throw Error("offline"); }],
+    ["custom", "http://example.test/x", async () => new Response(PNG, { status: 500 })],
+    ["custom", "https://example.test/x", async () => new Response("<html>")],
+  ]) {
+    assert.ok((await setIcon(p, kind, value, { fetchImpl })).error, kind);
+    assert.deepEqual(stored(), before);
+    assert.deepEqual(fs.readFileSync(iconFile(first.icon)), PNG);
+  }
+});
+
+test("setIcon explicit github ignores shared owners, rejects WebP and accepts JPEG", async (t) => {
+  const a = repo(t, "same"), b = repo(t, "SAME");
+  save([{ path: a }, { path: b }]);
+  assert.ok((await setIcon(a, "github", undefined, { fetchImpl: async () => new Response(Buffer.from("RIFF\0\0\0\0WEBP")) })).error);
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+  const result = await setIcon(a, "github", undefined, { fetchImpl: async () => new Response(jpeg) });
+  assert.equal(result.icon.source, "github");
+  assert.match(result.icon.file, /\.jpeg$/);
+  assert.deepEqual(fs.readFileSync(iconFile(result.icon)), jpeg);
+});
+
+test("setIcon repo and custom URL accept WebP and boundary-sized files", async (t) => {
+  const webp = Buffer.from("RIFF\0\0\0\0WEBP");
+  const p = repo(t, null, { "favicon.webp": webp });
+  save([{ path: p }]);
+  assert.equal((await setIcon(p, "repo")).icon.source, "repo");
+  const bytes = Buffer.concat([PNG, Buffer.alloc(262144 - PNG.length)]);
+  const result = await setIcon(p, "custom", "https://example.test/x", { fetchImpl: async () => new Response(bytes) });
+  assert.equal(result.icon.source, "custom");
+  assert.deepEqual(fs.readFileSync(iconFile(result.icon)), bytes);
+  assert.equal((await setIcon(p, "custom", "http://example.test/x", { fetchImpl: async () => new Response(webp) })).icon.source, "custom");
+});
+
+test("setIcon expands home-relative custom file paths", async () => {
+  save([{ path: project }]);
+  const source = path.join(tmp, "source.png");
+  fs.writeFileSync(source, PNG);
+  const value = `~/${path.relative(os.homedir(), source)}`;
+  const result = await setIcon(project, "custom", value);
+  assert.deepEqual(fs.readFileSync(iconFile(result.icon)), PNG);
+});
+
+test("setIcon stops oversized streamed downloads and preserves old icon", async () => {
+  save([{ path: project, icon: { source: "letter" } }]);
+  let cancelled = false;
+  const stream = new ReadableStream({
+    pull(controller) { controller.enqueue(Buffer.alloc(65536)); },
+    cancel() { cancelled = true; },
+  });
+  assert.ok((await setIcon(project, "custom", "https://example.test/x", { fetchImpl: async () => new Response(stream) })).error);
+  assert.equal(cancelled, true);
+  assert.deepEqual(stored()[0].icon, { source: "letter" });
+});
+
+test("setIcon timeout covers a stalled response body", async (t) => {
+  save([{ path: project, icon: { source: "letter" } }]);
+  const timeout = AbortSignal.timeout;
+  t.mock.method(AbortSignal, "timeout", (ms) => {
+    assert.equal(ms, 10000);
+    return timeout(20);
+  });
+  let cancelled = false;
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    const result = await setIcon(project, "custom", "https://example.test/x", { fetchImpl: async () => new Response(new ReadableStream({ cancel() { cancelled = true; } })) });
+    assert.ok(result.error);
+    assert.equal(cancelled, true);
+    assert.deepEqual(stored()[0].icon, { source: "letter" });
+  } finally { clearTimeout(keepAlive); }
+});
+
+test("setIcon never deletes arbitrary stored files or symlink targets", async () => {
+  const outside = path.join(tmp, "outside.png");
+  fs.writeFileSync(outside, PNG);
+  const home = process.env.HERDR_APP_HOME;
+  fs.mkdirSync(path.join(home, "data/project-icons"), { recursive: true });
+  const linked = path.join(home, "data/project-icons", `${require("node:crypto").createHash("sha1").update(project).digest("hex")}-1.png`);
+  fs.symlinkSync(outside, linked);
+  fs.writeFileSync(path.join(home, "source.png"), PNG);
+  for (const file of [outside, "../outside.png", "source.png", path.relative(home, linked)]) {
+    save([{ path: project, icon: { source: "custom", file } }]);
+    assert.equal((await setIcon(project, "letter")).icon.source, "letter");
+    assert.deepEqual(fs.readFileSync(outside), PNG);
+    assert.deepEqual(fs.readFileSync(path.join(home, "source.png")), PNG);
+  }
+});
+
+test("cli projects resolve-icons and set-icon await results", () => {
+  save([{ path: project }]);
+  const resolved = cli("resolve-icons");
+  assert.equal(resolved.status, 0, resolved.stderr);
+  assert.equal(JSON.parse(resolved.stdout).projects[0].iconSource, "letter");
+  const source = path.join(tmp, "source with spaces.png");
+  fs.writeFileSync(source, PNG);
+  const result = cli("set-icon", project, "custom", source);
+  assert.equal(result.status, 0, result.stderr);
+  const data = JSON.parse(result.stdout);
+  assert.equal(data.path, project);
+  assert.equal(data.icon.source, "custom");
+  assert.deepEqual(fs.readFileSync(iconFile(data.icon)), PNG);
+});
+
+test("setIcon persistence failure retains the prior icon and cleans the new cache", async (t) => {
+  const source = path.join(tmp, "source.png");
+  fs.writeFileSync(source, PNG);
+  save([{ path: project }]);
+  const first = await setIcon(project, "custom", source);
+  const rename = fs.renameSync;
+  t.mock.method(fs, "renameSync", (from, to) => {
+    if (to === path.join(process.env.ORCA_WT_STATE_DIR, "projects.json")) throw Error("persist failed");
+    return rename(from, to);
+  });
+  assert.ok((await setIcon(project, "custom", source)).error);
+  assert.deepEqual(stored()[0].icon, first.icon);
+  assert.deepEqual(fs.readFileSync(iconFile(first.icon)), PNG);
+  assert.deepEqual(fs.readdirSync(path.dirname(iconFile(first.icon))), [path.basename(first.icon.file)]);
+});
+
+test("setIcon cleanup failure still reports the persisted replacement", async (t) => {
+  const source = path.join(tmp, "source.png");
+  fs.writeFileSync(source, PNG);
+  save([{ path: project }]);
+  const first = await setIcon(project, "custom", source);
+  const unlink = fs.unlinkSync;
+  t.mock.method(fs, "unlinkSync", file => {
+    if (file === iconFile(first.icon)) {
+      assert.deepEqual(stored()[0].icon, { source: "letter" });
+      throw Error("cleanup denied");
+    }
+    return unlink(file);
+  });
+  assert.deepEqual(await setIcon(project, "letter"), { path: project, icon: { source: "letter" } });
+  assert.deepEqual(stored()[0].icon, { source: "letter" });
+});
+
+test("setIcon does not remove a pre-existing temporary cache file", async (t) => {
+  const timestamp = 9000000000000;
+  t.mock.method(Date, "now", () => timestamp);
+  const cache = path.join(process.env.HERDR_APP_HOME, "data/project-icons");
+  fs.mkdirSync(cache, { recursive: true });
+  const hash = require("node:crypto").createHash("sha1").update(project).digest("hex");
+  const existing = path.join(cache, `${hash}-${timestamp}.png.tmp`);
+  fs.writeFileSync(existing, "not ours");
+  const source = path.join(tmp, "source.png");
+  fs.writeFileSync(source, PNG);
+  save([{ path: project, icon: { source: "letter" } }]);
+  assert.ok((await setIcon(project, "custom", source)).error);
+  assert.equal(fs.readFileSync(existing, "utf8"), "not ours");
+  assert.deepEqual(stored()[0].icon, { source: "letter" });
+});
+
+test("setIcon rejects symlinked cache ancestors before creating outside directories", async () => {
+  const outside = path.join(tmp, "outside");
+  fs.mkdirSync(outside);
+  fs.symlinkSync(outside, path.join(process.env.HERDR_APP_HOME, "data"));
+  const source = path.join(tmp, "source.png");
+  fs.writeFileSync(source, PNG);
+  save([{ path: project, icon: { source: "letter" } }]);
+  assert.ok((await setIcon(project, "custom", source)).error);
+  assert.deepEqual(fs.readdirSync(outside), []);
+  assert.deepEqual(stored()[0].icon, { source: "letter" });
 });
 
 test("herdrHome honours override and defaults to user config", () => {
