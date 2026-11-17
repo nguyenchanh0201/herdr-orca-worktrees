@@ -159,15 +159,31 @@ export default class OrcaUsage extends View {
           cx.notify();
         }
       })
+      // A popup at {x, y} is placed by its top-left corner, kept inside the window and as tall as its
+      // content (capped at height), so the panel gets an exact height that ends just above the strip.
+      .on_mouse_down("left", (e) => {
+        const b = e?.bounds;
+        if (!b) {
+          openOverlay({ mod: "orca-usage-panel", kind: "popup", frame: "none", width: 0.95, height: 0.85 });
+          return;
+        }
+        const height = Math.max(200, Math.round(b.y - 12));
+        openOverlay({
+          mod: "orca-usage-panel",
+          kind: "popup",
+          frame: "none",
+          width: 0.95,
+          height,
+          at: { x: Math.round(b.x + 4), y: Math.round(b.y - 4 - height) },
+          props: { height },
+        });
+      })
       .child(div().flex_none().text_color(t.dim).child("Used"))
       .child(
         h_flex()
           .items_center()
           .gap(12)
           .cursor_pointer()
-          .on_click(() => {
-            openOverlay({ mod: "orca-usage-panel", kind: "popup", width: 760, height: 420 });
-          })
           .children(
             chips.map((p) => {
               const ic = this.icons[p.id];
@@ -214,6 +230,7 @@ export default class OrcaUsage extends View {
           .cursor_pointer()
           .text_color(t.muted)
           .hover((s) => s.text_color(t.foreground).bg(t.hover))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click((_e, cx) => {
             cx.stop_propagation();
             setShared("orca.usage.refresh", { at: Date.now(), force: true });
