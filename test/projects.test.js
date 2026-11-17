@@ -52,7 +52,7 @@ test("add primary and worktree once", () => {
   assert.deepEqual(addProject(repo.primary), { path: repo.primary, added: true });
   assert.deepEqual(addProject(repo.worktree), { path: repo.primary, added: false });
   assert.deepEqual(listProjects(), {
-    projects: [{ path: repo.primary, exists: true }],
+    projects: [{ path: repo.primary, exists: true, name: null, icon: null, iconSource: null }],
     seeded: true,
   });
 });
@@ -113,7 +113,7 @@ test("missing folder", () => {
   fs.rmSync(realCopied, { recursive: true, force: true });
 
   assert.deepEqual(listProjects(), {
-    projects: [{ path: realCopied, exists: false }],
+    projects: [{ path: realCopied, exists: false, name: null, icon: null, iconSource: null }],
     seeded: true,
   });
 });
@@ -139,7 +139,7 @@ test("clone local bare", () => {
   assert.deepEqual(res, { path: expectedDest });
   assert.ok(fs.existsSync(path.join(expectedDest, ".git")));
   assert.deepEqual(listProjects(), {
-    projects: [{ path: expectedDest, exists: true }],
+    projects: [{ path: expectedDest, exists: true, name: null, icon: null, iconSource: null }],
     seeded: true,
   });
 });

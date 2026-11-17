@@ -53,6 +53,10 @@ function handleProjects(args) {
   switch (sub) {
     case "list":
       return projects.listProjects();
+    case "rename":
+      return projects.renameProject(rest[0], rest.slice(1).join(" "));
+    case "logins":
+      return { logins: projects.githubLogins() };
     case "add":
       return projects.addProject(positional[0]);
     case "remove":
