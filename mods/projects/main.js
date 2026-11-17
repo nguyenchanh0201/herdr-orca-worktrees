@@ -2,7 +2,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared, pickFolder, notify, home, appHome, readTextFile, knownAgents } from "herdr";
 import { placeOf, group, visibleRows, label, letterOf, colorIndex, agentsBySpace, sinceUpdate, elapsed, activitySort, attentionCount, sortGroups, hideMainRows, topStatus, agentSummary, STATUS_GLYPH } from "./group.js";
-import { quitArgv, agentKind, parseResume, fallbackResume, keptFlags, fullAccessFlags, atPrompt, withFlags, resumeArgv, stripAnsi, isShellArgv, agentExited } from "./sleep.js";
+import { quitKeys, quitTyped, agentKind, parseResume, fallbackResume, keptFlags, fullAccessFlags, atPrompt, withFlags, resumeArgv, stripAnsi, isShellArgv, agentExited } from "./sleep.js";
 
 // Agents our tools start get full access: the flag goes right after the program word.
 function fullAccessArgv(run) {
@@ -307,17 +307,18 @@ export default class Projects extends View {
           if (!atPrompt(before?.status?.state)) {
             return { ok: false, name, reason: "is still busy — try again when it stops" };
           }
-          // No --if: hc refuses "done" (finished, unseen) for --if idle, and plain send already waits on a typed draft.
-          let sent = null;
+          // Type the quit command, then press Enter only if the input holds exactly that (no draft in front of it).
+          let typed = false;
           try {
-            const sr = await exec("hc", quitArgv(kind, t), { timeout: 5000 });
-            if (sr.code === 0) sent = !/"started"\s*:\s*false/.test(sr.stdout || "");
+            const keys = quitKeys(kind);
+            await exec("hc", ["keys", t, ...keys], { timeout: 5000 });
+            await cx.sleep(400);
+            const rd = await exec("hc", ["read", t, "--lines", "40"], { timeout: 5000 });
+            typed = rd.code === 0 && quitTyped(kind, rd.stdout || "");
+            await exec("hc", ["keys", t, ...(typed ? ["enter"] : keys.map(() => "backspace"))], { timeout: 5000 });
           } catch {}
-          if (sent === null) {
+          if (!typed) {
             return { ok: false, name, reason: "has unsent text — clear it and sleep again" };
-          }
-          if (!sent) {
-            return { ok: false, name, reason: "is showing a prompt — answer it and sleep again" };
           }
 
           const exitDeadline = Date.now() + 20000;

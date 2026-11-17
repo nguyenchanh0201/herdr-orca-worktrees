@@ -484,12 +484,21 @@ assertBoth("atPrompt accepts idle and done hc states only", (mod) => {
   return r;
 });
 
-assertBoth("quitArgv quits codex with ctrl+d and the rest with a typed command", (mod) => {
-  const r = ["codex", "claude", "agy"].map((k) => mod.quitArgv(k, "t1"));
-  assert.deepEqual(r, [
-    ["keys", "--json", "t1", "ctrl+d"],
-    ["send", "--json", "t1", "/exit"],
-    ["send", "--json", "t1", "/quit"],
-  ]);
+assertBoth("quitKeys types each agent's quit command", (mod) => {
+  const r = ["codex", "claude", "agy"].map((k) => mod.quitKeys(k));
+  assert.deepEqual(r, [["/", "q", "u", "i", "t"], ["/", "e", "x", "i", "t"], ["/", "q", "u", "i", "t"]]);
+  return r;
+});
+
+assertBoth("quitTyped matches only an input line holding exactly the quit command", (mod) => {
+  const r = [
+    mod.quitTyped("claude", "  \u276f /exit   Exit the CLI\n\u2500\u2500\n\u276f /exit\n\u2500\u2500\n  Opus"),
+    mod.quitTyped("claude", "\u276f hi/exit\n  Opus"),
+    mod.quitTyped("codex", "\u203a /quit  exit Codex\n\n\u203a /quit\n\n  GPT"),
+    mod.quitTyped("agy", "> /quit\n\u2500\u2500\n> /exit (quit)  Exit the CLI"),
+    mod.quitTyped("agy", "> hello/quit"),
+    mod.quitTyped("claude", "\u276f No, exit"),
+  ];
+  assert.deepEqual(r, [true, false, true, true, false, false]);
   return r;
 });

@@ -131,9 +131,14 @@ function atPrompt(state) {
   return state === "idle" || state === "done";
 }
 
-/** hc argv that quits an idle agent. Codex gets ctrl+d: a pasted "/quit" goes to the model and can open its rate-limit dialog, and ctrl+d only quits when the input is empty. */
-function quitArgv(kind, t) {
-  return kind === "codex" ? ["keys", "--json", t, "ctrl+d"] : ["send", "--json", t, QUIT[kind]];
+/** Keys that type kind's quit command. Typed, not pasted: agents send a pasted slash command to the model as a prompt. */
+function quitKeys(kind) {
+  return [...QUIT[kind]];
+}
+
+/** True when the input line holds exactly kind's quit command, so Enter quits instead of sending someone's draft. */
+function quitTyped(kind, screen) {
+  return new RegExp(`^\\s*[>›❯]\\s*${QUIT[kind]}\\s*$`, "m").test(stripAnsi(screen));
 }
 
 /** Insert kept flags right after the program word (unless dsh or env-prefixed). */
@@ -375,7 +380,8 @@ module.exports = {
   withFlags,
   fullAccessFlags,
   atPrompt,
-  quitArgv,
+  quitKeys,
+  quitTyped,
   resumeArgv,
   isValidResume,
   isShellArgv,
