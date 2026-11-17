@@ -25,10 +25,58 @@ function headline(p, now = Date.now()) {
   return `${w.label} ${pct}%`;
 }
 
+function shortGroup(label) {
+  return label.split(" · ")[0].replace(/ Models$/, "");
+}
+
+function chipText(p, mode = "compact", now = Date.now()) {
+  if (!p || (!p.status && !p.fetchedAt && (!p.windows || p.windows.length === 0))) {
+    return "···";
+  }
+  if (!p.windows || p.windows.length === 0) {
+    return p.status === "ok" ? "--" : "";
+  }
+  if (mode === "detailed") {
+    return p.windows
+      .map((w) => {
+        const fallback = w.label.includes(" · ")
+          ? (shortGroup(w.label) + (w.minutes === 10080 ? " wk" : w.minutes === 300 ? " 5h" : "")).trim()
+          : w.label;
+        return `${Math.round(w.usedPercent)}% ${until(w.resetsAt, now) || fallback}`;
+      })
+      .join(" · ");
+  }
+  let w = p.windows[0];
+  for (let i = 1; i < p.windows.length; i++) {
+    if (p.windows[i].usedPercent > w.usedPercent) w = p.windows[i];
+  }
+  const pct = Math.round(w.usedPercent);
+  if (w.label.includes(" · ")) {
+    const suffix = w.minutes === 10080 ? "wk" : w.minutes === 300 ? "5h" : "";
+    return `${pct}% ${shortGroup(w.label)} ${suffix}`.trim();
+  }
+  return headline(p, now);
+}
+
+function windowName(w) {
+  if (w.label === "Fable") return "Fable";
+  if (w.minutes === 300) return "Session";
+  if (w.minutes === 10080) return "Weekly";
+  return w.label;
+}
+
+function updatedText(fetchedAt, now = Date.now()) {
+  if (!fetchedAt) return "Not updated yet";
+  const diff = Math.max(0, now - fetchedAt);
+  if (diff < 60_000) return "Updated just now";
+  if (diff < 3_600_000) return `Updated ${Math.floor(diff / 60_000)}m ago`;
+  return `Updated ${Math.floor(diff / 3_600_000)}h ago`;
+}
+
 function barColor(pct) {
   if (pct >= 90) return "ansi1";
   if (pct >= 80) return "ansi3";
-  return "ansi2";
+  return "muted";
 }
 
-module.exports = { until, headline, barColor };
+module.exports = { until, headline, barColor, shortGroup, chipText, windowName, updatedText };

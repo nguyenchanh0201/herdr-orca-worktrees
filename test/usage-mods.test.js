@@ -55,6 +55,81 @@ test("ESM format.js copies match src/usage/format.js on all Task 1 cases", async
 
   const barColors = [79, 80, 90];
 
+  const shortGroupArgs = [
+    "Gemini 3.1 Pro Models · 5h",
+    "Claude Models · Weekly",
+    "Fable · 5h",
+    "Codex Models",
+    "5h",
+  ];
+
+  const chipTextArgs = [
+    [null, "compact", now],
+    [{}, "compact", now],
+    [{ status: "ok", windows: [] }, "compact", now],
+    [{ status: "error", windows: [] }, "compact", now],
+    [
+      {
+        status: "ok",
+        windows: [
+          { label: "5h", minutes: 300, usedPercent: 42.4, resetsAt: resets3h12m },
+          { label: "Weekly", minutes: 10080, usedPercent: 18, resetsAt: now + 86_400_000 },
+        ],
+      },
+      "compact",
+      now,
+    ],
+    [
+      {
+        status: "ok",
+        windows: [
+          { label: "5h", minutes: 300, usedPercent: 42.4, resetsAt: resets3h12m },
+          { label: "Weekly", minutes: 10080, usedPercent: 18, resetsAt: now + 86_400_000 },
+        ],
+      },
+      "detailed",
+      now,
+    ],
+    [
+      {
+        status: "ok",
+        windows: [
+          { label: "Gemini 3.1 Pro Models · 5h", minutes: 300, usedPercent: 25, resetsAt: resets3h12m },
+          { label: "Gemini 3.1 Pro Models · Weekly", minutes: 10080, usedPercent: 60, resetsAt: null },
+          { label: "Fable · 5h", minutes: 300, usedPercent: 60, resetsAt: null },
+        ],
+      },
+      "compact",
+      now,
+    ],
+    [
+      {
+        status: "ok",
+        windows: [
+          { label: "Gemini 3.1 Pro Models · 5h", minutes: 300, usedPercent: 25, resetsAt: resets3h12m },
+          { label: "Gemini 3.1 Pro Models · Weekly", minutes: 10080, usedPercent: 60, resetsAt: null },
+          { label: "Fable · 5h", minutes: 300, usedPercent: 60, resetsAt: null },
+        ],
+      },
+      "detailed",
+      now,
+    ],
+  ];
+
+  const windowNameArgs = [
+    { label: "Fable", minutes: 300 },
+    { label: "5h", minutes: 300 },
+    { label: "7d", minutes: 10080 },
+    { label: "Gemini 3.1 Pro", minutes: 0 },
+  ];
+
+  const updatedTextArgs = [
+    [null, now],
+    [now - 10_000, now],
+    [now - 60_000, now],
+    [now - 3_600_000, now],
+  ];
+
   for (const mod of [stripFormat, panelFormat]) {
     for (const args of untilArgs) {
       assert.equal(mod.until(...args), cjsFormat.until(...args));
@@ -64,6 +139,18 @@ test("ESM format.js copies match src/usage/format.js on all Task 1 cases", async
     }
     for (const pct of barColors) {
       assert.equal(mod.barColor(pct), cjsFormat.barColor(pct));
+    }
+    for (const label of shortGroupArgs) {
+      assert.equal(mod.shortGroup(label), cjsFormat.shortGroup(label));
+    }
+    for (const args of chipTextArgs) {
+      assert.equal(mod.chipText(...args), cjsFormat.chipText(...args));
+    }
+    for (const w of windowNameArgs) {
+      assert.equal(mod.windowName(w), cjsFormat.windowName(w));
+    }
+    for (const args of updatedTextArgs) {
+      assert.equal(mod.updatedText(...args), cjsFormat.updatedText(...args));
     }
   }
 });
