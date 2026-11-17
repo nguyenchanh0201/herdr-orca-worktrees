@@ -441,3 +441,130 @@ test("hideMainRows filters out main rows while keeping all groups", () => {
   assert.equal(groups[0].rows.length, 2);
   assert.equal(groups[1].rows.length, 1);
 });
+
+test("sleeping record attaches to matching open space row", () => {
+  const m = sp("m", { folder: "/r" });
+  const w1 = sp("w1", { folder: "/wt/a" });
+  const repoMap = {
+    "/r": { primary: "/r", linked: false },
+    "/wt/a": { primary: "/r", linked: true },
+  };
+  const rec = {
+    version: 1,
+    sleptAt: 1000,
+    branch: "feat/a",
+    repo: "/r",
+    agents: [{ name: "Claude Code", kind: "claude", cwd: "/wt/a", command: "claude --resume 1" }],
+  };
+
+  const groups = g.group([m, w1], (s) => s.folder, (p) => repoMap[p], {
+    sleeping: { "/wt/a": rec },
+  });
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].rows.length, 2);
+  assert.equal(groups[0].rows[0].space.id, "m");
+  assert.equal(groups[0].rows[0].sleeping, undefined);
+  assert.equal(groups[0].rows[1].space.id, "w1");
+  assert.deepEqual(groups[0].rows[1].sleeping, rec);
+});
+
+test("sleeping record without open space adds row after space rows ordered newest sleptAt first", () => {
+  const m = sp("m", { folder: "/r" });
+  const repoMap = { "/r": { primary: "/r", linked: false } };
+  const recOld = {
+    version: 1,
+    sleptAt: 1000,
+    branch: "feat/old",
+    repo: "/r",
+    agents: [{ name: "Codex", kind: "codex", cwd: "/wt/old", command: "codex resume 12345678" }],
+  };
+  const recNew = {
+    version: 1,
+    sleptAt: 2000,
+    branch: "feat/new",
+    repo: "/r",
+    agents: [{ name: "Claude Code", kind: "claude", cwd: "/wt/new", command: "claude --resume 1" }],
+  };
+
+  const groups = g.group([m], (s) => s.folder, (p) => repoMap[p], {
+    sleeping: {
+      "/wt/old": recOld,
+      "/wt/new": recNew,
+    },
+  });
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].rows.length, 3);
+  assert.equal(groups[0].rows[0].space.id, "m");
+  assert.deepEqual(groups[0].rows[1], {
+    space: null,
+    worktree: "/wt/new",
+    sleeping: recNew,
+    main: false,
+  });
+  assert.deepEqual(groups[0].rows[2], {
+    space: null,
+    worktree: "/wt/old",
+    sleeping: recOld,
+    main: false,
+  });
+});
+
+test("saved-only project with sleeping worktree gets the sleeping row", () => {
+  const rec = {
+    version: 1,
+    sleptAt: 1500,
+    branch: "feat/s",
+    repo: "/saved",
+    agents: [{ name: "Codex", kind: "codex", cwd: "/wt/s", command: "codex resume 12345678" }],
+  };
+  const groups = g.group([], (s) => s.folder, () => null, {
+    saved: [{ path: "/saved", exists: true }],
+    sleeping: { "/wt/s": rec },
+  });
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].key, "/saved");
+  assert.equal(groups[0].rows.length, 1);
+  assert.deepEqual(groups[0].rows[0], {
+    space: null,
+    worktree: "/wt/s",
+    sleeping: rec,
+    main: false,
+  });
+});
+
+test("visibleRows keeps active sleeping row when collapsed and hides space: null rows", () => {
+  const rec = { version: 1, sleptAt: 1000, branch: "b", agents: [] };
+  const rowActiveSleeping = { space: sp("a", { active: true }), main: false, sleeping: rec };
+  const rowInactiveSleeping = { space: sp("b", { active: false }), main: false, sleeping: rec };
+  const rowNoSpace = { space: null, worktree: "/wt/c", sleeping: rec, main: false };
+  const grp = {
+    key: "/r",
+    name: "r",
+    kind: "repo",
+    primary: "/r",
+    primarySpace: null,
+    rows: [rowActiveSleeping, rowInactiveSleeping, rowNoSpace],
+  };
+
+  assert.deepEqual(g.visibleRows(grp, true), [rowActiveSleeping]);
+  assert.deepEqual(g.visibleRows(grp, false), [rowActiveSleeping, rowInactiveSleeping, rowNoSpace]);
+});
+
+test("label handles no-space sleeping rows using branch or folder basename", () => {
+  assert.equal(
+    g.label({ space: null, worktree: "/wt/my-wt", sleeping: { branch: "feat/sleep" } }),
+    "feat/sleep"
+  );
+  assert.equal(
+    g.label({ space: null, worktree: "/wt/my-wt", sleeping: { branch: null } }),
+    "my-wt"
+  );
+  assert.equal(
+    g.label({ space: null, worktree: "/wt/my-wt/", sleeping: {} }),
+    "my-wt"
+  );
+  assert.equal(
+    g.label({ space: sp("s1", { named: false, name: "r", branch: "feat/open" }), main: false }),
+    "feat/open"
+  );
+});

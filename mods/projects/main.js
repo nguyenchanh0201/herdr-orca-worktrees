@@ -1,7 +1,8 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared, pickFolder, notify, home, appHome, readTextFile } from "herdr";
+import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared, pickFolder, notify, home, appHome, readTextFile, knownAgents } from "herdr";
 import { placeOf, group, visibleRows, label, agentsBySpace, sinceUpdate, elapsed, activitySort, attentionCount, sortGroups, hideMainRows } from "./group.js";
+import { agentKind } from "./sleep.js";
 import { findNode, sidebarStep } from "./sidebar.js";
 import config from "./config.js";
 
@@ -63,6 +64,11 @@ export default class Projects extends View {
     this.side = { seenWide: false, hidden: null };
     this.saved = [];
     this.seeded = null;
+    this.sleepingByWorktree = {};
+    this.knownAgentByKind = new Map();
+    this.spaceIdsSig = "";
+    this.sleepLoadSeq = 0;
+    this.sleepLoadedOnce = false;
     this.rev = shared("orca.projects.rev") ?? null;
     this.handledRequest = shared("orca.projects.request")?.id ?? null;
 
@@ -70,6 +76,7 @@ export default class Projects extends View {
 
     setShared("orca.projects.options", this.options);
     this.loadSaved(cx);
+    this.loadKnownAgents(cx);
     cx.timer.every(500, (cx) => this.check(cx));
     this.check(cx);
   }
@@ -102,7 +109,62 @@ export default class Projects extends View {
         this.saved = [];
         this.seeded = true;
       }
+      if (!this.sleepLoadedOnce) {
+        const primaries = this.currentRepoPrimaries();
+        if (primaries.length > 0) {
+          this.sleepLoadedOnce = true;
+          this.loadSleeping(cx, primaries);
+        }
+      }
       cx.notify();
+    });
+  }
+
+  loadKnownAgents(cx) {
+    cx.spawn(async (cx) => {
+      try {
+        const list = await knownAgents({ on: null });
+        const map = new Map();
+        for (const prog of list ?? []) {
+          const cmd = prog?.run?.[0]?.split(/[/\\]/).pop();
+          const kind =
+            agentKind({ app: prog?.key, program: prog }) ??
+            agentKind({ app: cmd }) ??
+            (cmd === "dsh" ? "dsh" : null);
+          if (kind && !map.has(kind)) {
+            map.set(kind, prog);
+          }
+        }
+        this.knownAgentByKind = map;
+        cx.notify();
+      } catch {}
+    });
+  }
+
+  currentRepoPrimaries() {
+    const set = new Set();
+    for (const s of this.saved) {
+      if (s?.path) set.add(s.path);
+    }
+    for (const r of this.repo.values()) {
+      if (r?.primary) set.add(r.primary);
+    }
+    return [...set];
+  }
+
+  loadSleeping(cx, primaries = this.currentRepoPrimaries()) {
+    if (!Array.isArray(primaries) || primaries.length === 0) {
+      this.sleepingByWorktree = {};
+      return;
+    }
+    const seq = ++this.sleepLoadSeq;
+    cx.spawn(async (cx) => {
+      const res = await this.cli(["sleep", "list", ...primaries]);
+      if (seq !== this.sleepLoadSeq) return;
+      if (res && typeof res === "object" && !res.error) {
+        this.sleepingByWorktree = res;
+        cx.notify();
+      }
     });
   }
 
@@ -121,6 +183,7 @@ export default class Projects extends View {
     if (rev !== undefined && rev !== this.rev) {
       this.rev = rev;
       this.loadSaved(cx);
+      this.loadSleeping(cx);
     }
 
     const opts = shared("orca.projects.options");
@@ -214,6 +277,15 @@ export default class Projects extends View {
     const ps = panes();
     const now = Date.now();
     const currentIds = new Set(sps.map((s) => s.id));
+    const spaceIdsSig = [...currentIds].sort().join(",");
+    if (spaceIdsSig !== this.spaceIdsSig) {
+      this.spaceIdsSig = spaceIdsSig;
+      const primaries = this.currentRepoPrimaries();
+      if (primaries.length > 0) {
+        this.sleepLoadedOnce = true;
+        this.loadSleeping(cx, primaries);
+      }
+    }
 
     for (const id of this.lastPlace.keys()) {
       if (!currentIds.has(id)) {
@@ -328,6 +400,13 @@ export default class Projects extends View {
         } finally {
           this.inflight.delete(place);
           this.pump(cx);
+          if (!this.sleepLoadedOnce && this.inflight.size === 0 && this.queue.length === 0) {
+            const primaries = this.currentRepoPrimaries();
+            if (primaries.length > 0) {
+              this.sleepLoadedOnce = true;
+              this.loadSleeping(cx, primaries);
+            }
+          }
           cx.notify();
         }
       });
@@ -493,6 +572,7 @@ export default class Projects extends View {
           prevKeyOf: (id) => this.keyOf.get(id),
           giveUp: (id) => this.seenAt.has(id) && Date.now() - this.seenAt.get(id) >= 1000,
           saved: this.saved,
+          sleeping: this.sleepingByWorktree,
         }
       );
 
@@ -511,7 +591,7 @@ export default class Projects extends View {
       }
       for (const g of groups) {
         for (const row of g.rows) {
-          this.keyOf.set(row.space.id, g.key);
+          if (row.space) this.keyOf.set(row.space.id, g.key);
         }
       }
 
@@ -526,7 +606,17 @@ export default class Projects extends View {
         const sorted = activitySort(agents(), this.since);
         const spaceById = new Map(sps.map((s) => [s.id, s]));
         setAgentOrder(sorted.map((a) => a.address));
-        if (sorted.length === 0) {
+        const sleepingEntries = [];
+        for (const g of groups) {
+          for (const row of g.rows) {
+            if (!row.sleeping) continue;
+            const rowLabel = label(row);
+            for (const sa of row.sleeping.agents ?? []) {
+              sleepingEntries.push({ sa, row, rowLabel });
+            }
+          }
+        }
+        if (sorted.length === 0 && sleepingEntries.length === 0) {
           body = v_flex().flex_1().min_h(0).items_center().justify_center()
             .child(div().text_color(t.muted).child("No agents"));
         } else {
@@ -534,6 +624,10 @@ export default class Projects extends View {
             const sp = spaceById.get(a.space);
             return this.renderActivityAgent(a, sp ? label(sp) : "", t, now);
           });
+          for (let i = 0; i < sleepingEntries.length; i++) {
+            const { sa, row, rowLabel } = sleepingEntries[i];
+            children.push(this.renderActivitySleepingAgent(sa, row, rowLabel, t, i));
+          }
           body = v_flex().flex_1().min_h(0).px(8).overflow_y_scrollbar().track_scroll(this.scroll)
             .children(children);
         }
@@ -563,9 +657,16 @@ export default class Projects extends View {
               activeIndex = children.length;
             }
             children.push(this.renderRow(row, t));
-            for (const a of bySpace.get(row.space.id) ?? []) {
-              order.push(a.address);
-              children.push(this.renderAgent(a, t, now));
+            if (row.sleeping) {
+              const sleepingAgents = row.sleeping.agents ?? [];
+              for (let i = 0; i < sleepingAgents.length; i++) {
+                children.push(this.renderSleepingAgent(sleepingAgents[i], row, t, i));
+              }
+            } else if (row.space) {
+              for (const a of bySpace.get(row.space.id) ?? []) {
+                order.push(a.address);
+                children.push(this.renderAgent(a, t, now));
+              }
             }
           }
         }
@@ -659,12 +760,16 @@ export default class Projects extends View {
 
   renderRow(row, t) {
     const space = row.space;
-    const dot = space.status
-      ? div().flex_none().text_color(t[space.status] ?? t.unknown).child("●")
-      : div().flex_none().text_color(t.dim).child("·");
+    const sleeping = Boolean(row.sleeping);
+    const active = Boolean(space?.active);
+    const dot = sleeping
+      ? svg("mods/projects/moon.svg").size(13).flex_none().text_color(t.dim)
+      : space?.status
+        ? div().flex_none().text_color(t[space.status] ?? t.unknown).child("●")
+        : div().flex_none().text_color(t.dim).child("·");
 
     const rowEl = h_flex()
-      .id(`space-${space.id}`)
+      .id(space ? `space-${space.id}` : `sleep-${row.worktree}`)
       .h(28)
       .pl(12)
       .pr(8)
@@ -672,27 +777,83 @@ export default class Projects extends View {
       .items_center()
       .rounded(6)
       .cursor_pointer()
-      .when(space.active, (el) => el.bg(t.selected))
-      .when(!space.active, (el) => el.hover((s) => s.bg(t.hover)))
-      .on_click(() => run("space.select", { id: space.id }))
-      .on_mouse_down("right", (_e, cx) => {
-        cx.stop_propagation();
-        openOverlay({
-          mod: "menu",
-          kind: "popup",
-          width: 200,
-          height: 260,
-          props: { tab: "space", target: { id: space.id } },
-        });
-      })
+      .when(active, (el) => el.bg(t.selected))
+      .when(!active, (el) => el.hover((s) => s.bg(t.hover)))
+      .when(Boolean(space), (el) =>
+        el
+          .on_click(() => run("space.select", { id: space.id }))
+          .on_mouse_down("right", (_e, cx) => {
+            cx.stop_propagation();
+            openOverlay({
+              mod: "menu",
+              kind: "popup",
+              width: 200,
+              height: 260,
+              props: { tab: "space", target: { id: space.id } },
+            });
+          })
+      )
       .child(dot)
-      .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(label(space)));
+      .child(
+        div()
+          .flex_1()
+          .min_w(0)
+          .truncate()
+          .text_color(sleeping ? t.dim : t.foreground)
+          .child(label(row))
+      );
 
     if (row.main) {
       rowEl.child(div().flex_none().text_color(t.dim).child("★"));
     }
 
     return rowEl;
+  }
+
+  sleepingAgentIcon(sa, t) {
+    const prog = this.knownAgentByKind?.get(sa.kind);
+    return !prog?.icon
+      ? svg("icons/agent.svg").size(13).flex_none().text_color(t.dim)
+      : prog.tint
+        ? svg(prog.icon).size(13).flex_none().text_color(t.dim)
+        : image(prog.icon).size(13).flex_none();
+  }
+
+  renderSleepingAgent(sa, row, t, idx) {
+    const id = row.space ? row.space.id : row.worktree;
+    return h_flex()
+      .id(`sleeping-agent-${id}-${idx}-${sa.name}`)
+      .h(24)
+      .pl(24)
+      .pr(8)
+      .gap(8)
+      .items_center()
+      .rounded(6)
+      .child(this.sleepingAgentIcon(sa, t))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(sa.name ?? sa.kind ?? ""))
+      .child(div().flex_none().text_color(t.dim).child("· asleep"));
+  }
+
+  renderActivitySleepingAgent(sa, row, spaceLabel, t, idx) {
+    const id = row.space ? row.space.id : row.worktree;
+    return v_flex()
+      .id(`activity-sleeping-${id}-${idx}-${sa.name}`)
+      .px(8)
+      .py(5)
+      .gap(2)
+      .rounded(6)
+      .child(
+        h_flex()
+          .gap(8)
+          .items_center()
+          .child(this.sleepingAgentIcon(sa, t))
+          .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(sa.name ?? sa.kind ?? ""))
+          .child(svg("mods/projects/moon.svg").size(12).flex_none().text_color(t.dim))
+          .child(div().flex_none().text_color(t.dim).child("asleep"))
+      )
+      .when(Boolean(spaceLabel), (el) =>
+        el.child(div().pl(21).truncate().text_size(11).text_color(t.dim).child(spaceLabel))
+      );
   }
 
   agentIcon(a, t) {

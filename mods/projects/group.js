@@ -21,9 +21,16 @@ export function placeOf(space, panes = []) {
   return space.folder ?? "";
 }
 
-export function label(space) {
-  if (!space) return "";
-  return space.named ? space.name : (space.branch ?? space.name);
+export function label(input) {
+  if (!input) return "";
+  if ("space" in input) {
+    if (input.space === null) {
+      return input.sleeping?.branch || repoName(input.worktree);
+    }
+    const s = input.space;
+    return s.named ? s.name : (s.branch ?? s.name);
+  }
+  return input.named ? input.name : (input.branch ?? input.name);
 }
 
 export function visibleRows(g, collapsed) {
@@ -44,6 +51,7 @@ export function group(spaces = [], placeOf = (s) => s?.folder ?? "", repoOf = ()
       savedByPath.set(s.path, Boolean(s.exists));
     }
   }
+  const sleeping = opts?.sleeping && typeof opts.sleeping === "object" ? opts.sleeping : null;
 
   // Pass 1: Classify spaces and discover all definitive group keys this round
   const items = [];
@@ -101,13 +109,23 @@ export function group(spaces = [], placeOf = (s) => s?.folder ?? "", repoOf = ()
     return g;
   }
 
+  const matchedWorktrees = new Set();
+  const makeRow = (space, main, place) => {
+    const rec = sleeping && place && Object.prototype.hasOwnProperty.call(sleeping, place) ? sleeping[place] : null;
+    if (rec) {
+      matchedWorktrees.add(place);
+      return { space, main, sleeping: rec };
+    }
+    return { space, main };
+  };
+
   for (const item of items) {
     if (item.type === "machine") {
       const g = getOrCreateGroup(item.key, "machine");
       g.rows.push({ space: item.space, main: false });
     } else if (item.type === "repo") {
       const g = getOrCreateGroup(item.key, "repo");
-      g.rows.push({ space: item.space, main: item.repo.linked === false });
+      g.rows.push(makeRow(item.space, item.repo.linked === false, placeOf(item.space)));
     } else if (item.type === "other") {
       const g = getOrCreateGroup("other", "other");
       g.rows.push({ space: item.space, main: false });
@@ -117,7 +135,7 @@ export function group(spaces = [], placeOf = (s) => s?.folder ?? "", repoOf = ()
       if (prevKey && knownKeys.has(prevKey)) {
         const type = prevKey.startsWith("machine:") ? "machine" : (prevKey === "other" ? "other" : "repo");
         const g = getOrCreateGroup(prevKey, type);
-        g.rows.push({ space: item.space, main: false });
+        g.rows.push(type === "repo" ? makeRow(item.space, false, placeOf(item.space)) : { space: item.space, main: false });
       } else if (giveUp(item.space.id)) {
         const g = getOrCreateGroup("other", "other");
         g.rows.push({ space: item.space, main: false });
@@ -168,6 +186,26 @@ export function group(spaces = [], placeOf = (s) => s?.folder ?? "", repoOf = ()
   }
   if (otherGroup) {
     result.push(otherGroup);
+  }
+
+  if (sleeping) {
+    const extraByRepo = new Map();
+    for (const [worktree, record] of Object.entries(sleeping)) {
+      if (!record || matchedWorktrees.has(worktree) || !record.repo) continue;
+      let list = extraByRepo.get(record.repo);
+      if (!list) {
+        list = [];
+        extraByRepo.set(record.repo, list);
+      }
+      list.push({ space: null, worktree, sleeping: record, main: false });
+    }
+    for (const g of result) {
+      if (g.kind !== "repo") continue;
+      const extras = extraByRepo.get(g.key);
+      if (!extras || extras.length === 0) continue;
+      extras.sort((a, b) => (b.sleeping?.sleptAt ?? 0) - (a.sleeping?.sleptAt ?? 0));
+      g.rows.push(...extras);
+    }
   }
 
   return result;
