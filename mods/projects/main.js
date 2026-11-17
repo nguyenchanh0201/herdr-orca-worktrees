@@ -2,9 +2,19 @@ import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared, pickFolder, notify, home, appHome, readTextFile, knownAgents } from "herdr";
 import { placeOf, group, visibleRows, label, agentsBySpace, sinceUpdate, elapsed, activitySort, attentionCount, sortGroups, hideMainRows } from "./group.js";
-import { agentKind } from "./sleep.js";
+import { QUIT, agentKind, parseResume, fallbackResume, keptFlags, withFlags, resumeArgv, stripAnsi, isShellArgv, agentExited } from "./sleep.js";
 import { findNode, sidebarStep } from "./sidebar.js";
 import config from "./config.js";
+
+async function hcGet(terminal) {
+  try {
+    const res = await exec("hc", ["get", terminal, "--json"]);
+    if (res.code !== 0 || !res.stdout) return null;
+    return JSON.parse(res.stdout);
+  } catch {
+    return null;
+  }
+}
 
 async function worktreeRoot() {
   const raw = await readTextFile(`${appHome()}/settings.json`);
@@ -69,6 +79,7 @@ export default class Projects extends View {
     this.spaceIdsSig = "";
     this.sleepLoadSeq = 0;
     this.sleepLoadedOnce = false;
+    this.waking = new Set();
     this.rev = shared("orca.projects.rev") ?? null;
     this.handledRequest = shared("orca.projects.request")?.id ?? null;
 
@@ -162,10 +173,312 @@ export default class Projects extends View {
       const res = await this.cli(["sleep", "list", ...primaries]);
       if (seq !== this.sleepLoadSeq) return;
       if (res && typeof res === "object" && !res.error) {
-        this.sleepingByWorktree = res;
+        const ps = panes();
+        const openWorktrees = new Set(
+          spaces()
+            .filter((s) => s.machine === null)
+            .map((s) => placeOf(s, ps))
+            .filter(Boolean)
+        );
+        const cleaned = { ...res };
+        const toClear = [];
+        await Promise.all(
+          Object.entries(res).map(async ([wt, rec]) => {
+            if (!openWorktrees.has(wt) || !Array.isArray(rec?.agents)) return;
+            const infos = await Promise.all(
+              rec.agents.map((sa) => (sa?.terminal ? hcGet(sa.terminal) : Promise.resolve(null)))
+            );
+            const resumedByHand = infos.some(
+              (info) => info?.foreground && !isShellArgv(info.foreground.argv?.[0])
+            );
+            if (resumedByHand) {
+              toClear.push(wt);
+            }
+          })
+        );
+        if (seq !== this.sleepLoadSeq) return;
+        for (const wt of toClear) {
+          delete cleaned[wt];
+          await this.cli(["sleep", "clear", wt]);
+        }
+        if (seq !== this.sleepLoadSeq) return;
+        this.sleepingByWorktree = cleaned;
         cx.notify();
       }
     });
+  }
+
+  async handleSleep(q, cx) {
+    try {
+      const sps = spaces();
+      const ps = panes();
+      const sp = sps.find((s) => s.id === q.space);
+      const worktree = sp ? placeOf(sp, ps) : null;
+      const spaceAgents = agents().filter((a) => a.space === q.space && agentKind(a) !== null);
+      if (spaceAgents.length === 0) {
+        notify({ title: "Sleep", body: "No agents to sleep" });
+        setShared("orca.projects.sleep", { id: q.id, state: "done" });
+        return;
+      }
+
+      const busy = spaceAgents.filter((a) => a.status === "working" || a.status === "blocked");
+      if (busy.length > 0 && !q.confirm) {
+        setShared("orca.projects.sleep", {
+          id: q.id,
+          state: "confirm",
+          busy: busy.map((a) => ({ name: a.program?.name ?? a.app ?? "Agent", status: a.status })),
+        });
+        return;
+      }
+
+      setShared("orca.projects.sleep", { id: q.id, state: "running" });
+
+      if (busy.length > 0 && q.confirm) {
+        await Promise.all(busy.map((a) => exec("hc", ["interrupt", a.address]).catch(() => null)));
+        const pending = new Set(busy.map((a) => a.address));
+        const idleDeadline = Date.now() + 5000;
+        while (pending.size > 0 && Date.now() < idleDeadline) {
+          await cx.sleep(250);
+          await Promise.all(
+            [...pending].map(async (t) => {
+              const info = await hcGet(t);
+              if (!info || info.status === "idle") pending.delete(t);
+            })
+          );
+        }
+      }
+
+      const results = await Promise.all(
+        spaceAgents.map(async (a) => {
+          const kind = agentKind(a);
+          const t = a.address;
+          const name = a.program?.name ?? a.app ?? kind;
+          const before = await hcGet(t);
+          const argv = before?.foreground?.argv;
+          const pid = before?.foreground?.pid;
+          const createdMs = before?.created_ms;
+          const cwd = before?.cwd;
+
+          let claudeSessionId = null;
+          if (kind === "claude" && pid != null) {
+            try {
+              const raw = await readTextFile(`${home()}/.claude/sessions/${pid}.json`);
+              if (raw) claudeSessionId = JSON.parse(raw)?.sessionId ?? null;
+            } catch {}
+          }
+
+          let codexSessionId = null;
+          if (kind === "codex" && cwd) {
+            const cs = await this.cli(["codex-session", cwd, String(createdMs ?? 0)]);
+            codexSessionId = cs?.id ?? null;
+          }
+
+          let sendOk = false;
+          try {
+            const sr = await exec("hc", ["send", "--if", "idle", t, QUIT[kind]], { timeout: 5000 });
+            sendOk = sr.code === 0;
+          } catch {
+            sendOk = false;
+          }
+          if (!sendOk) {
+            return { ok: false, name, reason: "has unsent text — clear it and sleep again" };
+          }
+
+          const exitDeadline = Date.now() + 20000;
+          let exited = false;
+          while (Date.now() < exitDeadline) {
+            await cx.sleep(500);
+            const after = await hcGet(t);
+            if (agentExited(before, after)) {
+              exited = true;
+              break;
+            }
+          }
+          if (!exited) {
+            return { ok: false, name, reason: "didn't quit" };
+          }
+
+          let screen = "";
+          try {
+            const rd = await exec("hc", ["read", t, "--lines", "60"]);
+            if (rd.code === 0) screen = rd.stdout || "";
+          } catch {}
+
+          const resume = parseResume(kind, screen) ?? fallbackResume(kind, { claudeSessionId, codexSessionId });
+          if (!resume) {
+            const tail = stripAnsi(screen)
+              .split(/\r?\n/)
+              .map((l) => l.trim())
+              .filter(Boolean)
+              .slice(-5)
+              .join("\n");
+            notify({
+              title: `${name} exited without resume command`,
+              body: tail || "No output captured",
+              level: "warning",
+            });
+            return { ok: false, name, reason: "no resume command", toasted: true };
+          }
+
+          const flags = keptFlags(kind, argv);
+          const command = withFlags(kind, resume, flags);
+          return {
+            ok: true,
+            agent: {
+              terminal: t,
+              tab: a.tab,
+              name,
+              kind,
+              cwd: cwd || worktree,
+              resume,
+              flags,
+              command,
+            },
+          };
+        })
+      );
+
+      const saved = results.filter((r) => r.ok).map((r) => r.agent);
+      const failed = results.filter((r) => !r.ok);
+
+      if (saved.length > 0 && worktree) {
+        const saveRes = await this.cli([
+          "sleep",
+          "save",
+          worktree,
+          JSON.stringify({
+            version: 1,
+            sleptAt: Date.now(),
+            branch: sp?.branch || null,
+            agents: saved,
+          }),
+        ]);
+        if (saveRes?.error) {
+          notify({ title: "Sleep", body: saveRes.error, level: "error" });
+        }
+      }
+
+      if (saved.length > 0 && failed.length === 0) {
+        notify({ title: "Sleep", body: `Slept ${saved.length} agent${saved.length === 1 ? "" : "s"}` });
+      } else if (saved.length > 0 && failed.length > 0) {
+        const reasons = failed.map((f) => `${f.name} ${f.reason}`).join("; ");
+        notify({
+          title: "Sleep",
+          body: `Slept ${saved.length} of ${results.length} agents — ${reasons}`,
+          level: "warning",
+        });
+      } else if (failed.length > 0) {
+        const untooasted = failed.filter((f) => !f.toasted);
+        if (untooasted.length > 0) {
+          notify({
+            title: "Sleep",
+            body: untooasted.map((f) => `${f.name} ${f.reason}`).join("; "),
+            level: "warning",
+          });
+        }
+      }
+
+      setShared("orca.projects.rev", Date.now());
+      setShared("orca.projects.sleep", { id: q.id, state: "done" });
+    } catch (e) {
+      const error = String(e?.message ?? e);
+      notify({ title: "Sleep", body: error, level: "error" });
+      setShared("orca.projects.sleep", { id: q.id, state: "error", error });
+    }
+  }
+
+  async handleWake(q, cx) {
+    const worktree = q.worktree;
+    if (!worktree || this.waking.has(worktree)) return;
+    this.waking.add(worktree);
+    try {
+      const rec = await this.cli(["sleep", "get", worktree]);
+      if (!rec || rec.sleeping === false || rec.error || !Array.isArray(rec.agents) || rec.agents.length === 0) {
+        return;
+      }
+
+      let targetSpace = spaces().find((s) => s.machine === null && placeOf(s, panes()) === worktree);
+      const failedAgents = [];
+
+      if (targetSpace) {
+        for (const sa of rec.agents) {
+          const info = sa.terminal ? await hcGet(sa.terminal) : null;
+          if (info?.foreground && isShellArgv(info.foreground.argv?.[0])) {
+            try {
+              const sr = await exec("hc", ["send", sa.terminal, sa.command]);
+              if (sr.code !== 0) failedAgents.push(sa);
+            } catch {
+              failedAgents.push(sa);
+            }
+          } else {
+            try {
+              run("tab.new", {
+                space: targetSpace.id,
+                name: sa.name,
+                folder: sa.cwd || worktree,
+                argv: resumeArgv(sa.command),
+              });
+            } catch {
+              failedAgents.push(sa);
+            }
+          }
+        }
+      } else {
+        const [first, ...rest] = rec.agents;
+        try {
+          run("space.new", {
+            folder: worktree,
+            tab: first.name,
+            argv: resumeArgv(first.command),
+          });
+        } catch {
+          failedAgents.push(...rec.agents);
+        }
+
+        if (failedAgents.length === 0 && rest.length > 0) {
+          const deadline = Date.now() + 3000;
+          while (!targetSpace && Date.now() < deadline) {
+            await cx.sleep(150);
+            targetSpace = spaces().find((s) => s.machine === null && placeOf(s, panes()) === worktree);
+          }
+          if (!targetSpace) {
+            failedAgents.push(...rest);
+          } else {
+            for (const sa of rest) {
+              try {
+                run("tab.new", {
+                  space: targetSpace.id,
+                  name: sa.name,
+                  folder: sa.cwd || worktree,
+                  argv: resumeArgv(sa.command),
+                });
+              } catch {
+                failedAgents.push(sa);
+              }
+            }
+          }
+        }
+      }
+
+      if (failedAgents.length === 0) {
+        await this.cli(["sleep", "clear", worktree]);
+      } else {
+        notify({
+          title: "Wake",
+          body: `Failed to wake: ${failedAgents.map((a) => a.name).join(", ")}`,
+          level: "error",
+        });
+        await this.cli([
+          "sleep",
+          "save",
+          worktree,
+          JSON.stringify({ ...rec, agents: failedAgents }),
+        ]);
+      }
+      setShared("orca.projects.rev", Date.now());
+    } finally {
+      this.waking.delete(worktree);
+    }
   }
 
   check(cx) {
@@ -215,7 +528,7 @@ export default class Projects extends View {
     const q = shared("orca.projects.request");
     if (q?.id && q.id !== this.handledRequest) {
       this.handledRequest = q.id;
-      cx.spawn(async () => {
+      cx.spawn(async (cx) => {
         if (q.kind === "pick") {
           const f = await pickFolder({ prompt: "Add project" });
           if (!f) return;
@@ -266,6 +579,15 @@ export default class Projects extends View {
             const err = String(e?.message ?? e);
             setShared("orca.projects.worktree", { id: q.id, state: "error", error: err });
             notify({ title: "Create worktree", body: err, level: "error" });
+          }
+        } else if (q.kind === "sleep") {
+          await this.handleSleep(q, cx);
+        } else if (q.kind === "wake") {
+          await this.handleWake(q, cx);
+        } else if (q.kind === "forget-sleep") {
+          if (q.worktree) {
+            await this.cli(["sleep", "clear", q.worktree]);
+            setShared("orca.projects.rev", Date.now());
           }
         }
       });
@@ -656,14 +978,17 @@ export default class Projects extends View {
             if (row.space?.active) {
               activeIndex = children.length;
             }
-            children.push(this.renderRow(row, t));
+            const rowAgents = row.space ? (bySpace.get(row.space.id) ?? []) : [];
+            const hasAgents = rowAgents.some((a) => agentKind(a) !== null);
+            const worktree = row.worktree ?? (row.space ? placeOf(row.space, ps) : "");
+            children.push(this.renderRow(row, t, { hasAgents, worktree }));
             if (row.sleeping) {
               const sleepingAgents = row.sleeping.agents ?? [];
               for (let i = 0; i < sleepingAgents.length; i++) {
                 children.push(this.renderSleepingAgent(sleepingAgents[i], row, t, i));
               }
             } else if (row.space) {
-              for (const a of bySpace.get(row.space.id) ?? []) {
+              for (const a of rowAgents) {
                 order.push(a.address);
                 children.push(this.renderAgent(a, t, now));
               }
@@ -758,10 +1083,12 @@ export default class Projects extends View {
     return head;
   }
 
-  renderRow(row, t) {
+  renderRow(row, t, opts = {}) {
     const space = row.space;
     const sleeping = Boolean(row.sleeping);
     const active = Boolean(space?.active);
+    const hasAgents = Boolean(opts.hasAgents);
+    const worktree = opts.worktree ?? row.worktree ?? "";
     const dot = sleeping
       ? svg("mods/projects/moon.svg").size(13).flex_none().text_color(t.dim)
       : space?.status
@@ -779,20 +1106,33 @@ export default class Projects extends View {
       .cursor_pointer()
       .when(active, (el) => el.bg(t.selected))
       .when(!active, (el) => el.hover((s) => s.bg(t.hover)))
-      .when(Boolean(space), (el) =>
-        el
-          .on_click(() => run("space.select", { id: space.id }))
-          .on_mouse_down("right", (_e, cx) => {
-            cx.stop_propagation();
-            openOverlay({
-              mod: "menu",
-              kind: "popup",
-              width: 200,
-              height: 260,
-              props: { tab: "space", target: { id: space.id } },
-            });
-          })
+      .when(sleeping, (el) =>
+        el.on_click(() => {
+          if (space) run("space.select", { id: space.id });
+          if (worktree) {
+            setShared("orca.projects.request", { id: Date.now(), kind: "wake", worktree });
+          }
+        })
       )
+      .when(!sleeping && Boolean(space), (el) =>
+        el.on_click(() => run("space.select", { id: space.id }))
+      )
+      .on_mouse_down("right", (_e, cx) => {
+        cx.stop_propagation();
+        openOverlay({
+          mod: "orca-project",
+          kind: "popup",
+          width: 220,
+          height: 140,
+          props: {
+            mode: "space",
+            space: space ? space.id : null,
+            worktree,
+            sleeping,
+            hasAgents,
+          },
+        });
+      })
       .child(dot)
       .child(
         div()

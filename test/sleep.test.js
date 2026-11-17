@@ -223,6 +223,50 @@ assertBoth("isValidResume accepts patterns and fallbacks, rejects invalid", (mod
   });
 });
 
+assertBoth("isShellArgv detects shells including login shells", (mod) => {
+  const cases = [
+    ["zsh", true],
+    ["-zsh", true],
+    ["/bin/bash", true],
+    ["/opt/homebrew/bin/fish", true],
+    ["sh", true],
+    ["dash", true],
+    ["ksh", true],
+    ["tcsh", true],
+    ["csh", true],
+    ["nu", true],
+    ["pwsh", true],
+    ["elvish", true],
+    ["codex", false],
+    ["/usr/local/bin/claude", false],
+    ["", false],
+    [null, false],
+    [undefined, false],
+  ];
+  return cases.map(([argv0, expected]) => {
+    const actual = mod.isShellArgv(argv0);
+    assert.equal(actual, expected, `isShellArgv(${String(argv0)})`);
+    return actual;
+  });
+});
+
+assertBoth("agentExited detects exit by missing foreground, shell argv, or pid change", (mod) => {
+  const cases = [
+    [{ foreground: { pid: 100, argv: ["codex"] } }, null, true],
+    [{ foreground: { pid: 100, argv: ["codex"] } }, {}, true],
+    [{ foreground: { pid: 100, argv: ["codex"] } }, { foreground: { pid: 100, argv: ["-zsh"] } }, true],
+    [{ foreground: { pid: 100, argv: ["claude"] } }, { foreground: { pid: 101, argv: ["/bin/bash"] } }, true],
+    [{ foreground: { pid: 100, argv: ["codex"] } }, { foreground: { pid: 100, argv: ["codex"] } }, false],
+    [{ foreground: { pid: 100, argv: ["codex"] } }, { foreground: { pid: 200, argv: ["node"] } }, true],
+    [null, { foreground: { pid: 100, argv: ["codex"] } }, false],
+  ];
+  return cases.map(([before, after, expected], i) => {
+    const actual = mod.agentExited(before, after);
+    assert.equal(actual, expected, `agentExited case ${i}`);
+    return actual;
+  });
+});
+
 function makeRecord(overrides = {}) {
   return {
     version: 1,

@@ -18,9 +18,35 @@ export default class OrcaProject extends View {
 
     const p = props();
     this.mode = p.mode ?? "add";
+    this.closed = false;
     this.handle.focus();
 
-    if (this.mode === "clone") {
+    if (this.mode === "space") {
+      this.sleepReqId = null;
+      this.busyAgents = null;
+      this.sleepError = null;
+      cx.timer.every(150, (cx) => {
+        if (this.closed || !this.sleepReqId) return;
+        const s = shared("orca.projects.sleep");
+        if (s?.id !== this.sleepReqId) return;
+        if (s.state === "confirm") {
+          if (!this.busyAgents) {
+            this.busyAgents = Array.isArray(s.busy) ? s.busy : [];
+            cx.notify();
+          }
+          return;
+        }
+        if (s.state === "running" || s.state === "done") {
+          this.close();
+          return;
+        }
+        if (s.state === "error") {
+          this.sleepError = s.error ?? "Sleep failed";
+          this.sleepReqId = null;
+          cx.notify();
+        }
+      });
+    } else if (this.mode === "clone") {
       let savedParent = "";
       try {
         savedParent = localStorage.getItem("clone.parent") || "";
@@ -450,12 +476,146 @@ export default class OrcaProject extends View {
       );
   }
 
+  renderSpace(t) {
+    const p = props();
+    const wrap = v_flex()
+      .id("orca-project-space")
+      .w_full()
+      .bg(t.popover)
+      .p(5)
+      .text_size(12.8)
+      .track_focus(this.handle)
+      .on_key_down((e) => {
+        if (e.key === "escape") this.close();
+      });
+
+    if (this.busyAgents) {
+      const msg =
+        this.busyAgents.length === 1
+          ? `${this.busyAgents[0].name} is ${this.busyAgents[0].status === "blocked" ? "waiting for you" : "working"}. Sleep anyway?`
+          : `${this.busyAgents.map((b) => b.name).join(", ")} are busy. Sleep anyway?`;
+
+      return wrap
+        .p(10)
+        .gap(10)
+        .child(div().text_size(12.4).text_color(t.foreground).child(msg))
+        .child(
+          h_flex()
+            .justify_end()
+            .gap(6)
+            .child(
+              div()
+                .id("sleep-cancel")
+                .h(28)
+                .px(10)
+                .flex()
+                .items_center()
+                .rounded(6)
+                .border(1)
+                .border_color(t.input)
+                .text_color(t.muted)
+                .cursor_pointer()
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                .on_click(() => this.close())
+                .child("Cancel")
+            )
+            .child(
+              div()
+                .id("sleep-confirm")
+                .h(28)
+                .px(10)
+                .flex()
+                .items_center()
+                .rounded(6)
+                .bg(t.accent)
+                .text_color(t.background)
+                .font_semibold()
+                .cursor_pointer()
+                .on_click(() => {
+                  const id = Date.now();
+                  this.sleepReqId = id;
+                  setShared("orca.projects.request", { id, kind: "sleep", space: p.space, confirm: true });
+                  this.close();
+                })
+                .child("Sleep anyway")
+            )
+        );
+    }
+
+    return wrap
+      .when(Boolean(p.hasAgents && !p.sleeping && p.space), (el) =>
+        el.child(
+          this.popupRow(
+            "space-sleep",
+            "Sleep",
+            (_e, cx) => {
+              if (this.sleepReqId) return;
+              this.sleepReqId = Date.now();
+              this.sleepError = null;
+              setShared("orca.projects.request", { id: this.sleepReqId, kind: "sleep", space: p.space, confirm: false });
+              cx.notify();
+            },
+            t
+          )
+        )
+      )
+      .when(Boolean(p.sleeping), (el) =>
+        el.child(
+          this.popupRow(
+            "space-wake",
+            "Wake",
+            () => {
+              setShared("orca.projects.request", { id: Date.now(), kind: "wake", worktree: p.worktree });
+              this.close();
+            },
+            t
+          )
+        )
+      )
+      .when(Boolean(p.sleeping && !p.space), (el) =>
+        el.child(
+          this.popupRow(
+            "space-forget-sleep",
+            "Forget sleep",
+            () => {
+              setShared("orca.projects.request", { id: Date.now(), kind: "forget-sleep", worktree: p.worktree });
+              this.close();
+            },
+            t
+          )
+        )
+      )
+      .when(Boolean(p.space), (el) =>
+        el.child(
+          this.popupRow(
+            "space-menu",
+            "Space menu…",
+            () => {
+              this.close();
+              openOverlay({
+                mod: "menu",
+                kind: "popup",
+                width: 200,
+                height: 260,
+                props: { tab: "space", target: { id: p.space } },
+              });
+            },
+            t
+          )
+        )
+      )
+      .when(Boolean(this.sleepError), (el) =>
+        el.child(div().px(9).py(4).text_size(11).text_color(t.blocked).child(this.sleepError))
+      );
+  }
+
   render() {
     if (!props()?.overlay) return div();
     const t = theme();
     if (this.mode === "clone") return this.renderClone(t);
     if (this.mode === "header") return this.renderHeader(t);
     if (this.mode === "options") return this.renderOptions(t);
+    if (this.mode === "space") return this.renderSpace(t);
     return this.renderAdd(t);
   }
 }

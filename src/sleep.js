@@ -143,6 +143,24 @@ function isValidResume(kind, resume) {
   return fallback ? fallback.test(resume) : false;
 }
 
+const SHELLS = new Set(["zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "pwsh", "elvish"]);
+
+/** Return true if argv0's basename (stripping leading '-') is a known interactive shell. */
+function isShellArgv(argv0) {
+  if (typeof argv0 !== "string" || !argv0) return false;
+  const base = argv0.split(/[/\\]/).pop() || "";
+  const name = base.startsWith("-") ? base.slice(1) : base;
+  return SHELLS.has(name);
+}
+
+/** Return true when a terminal's foreground process has exited back to a shell or changed pid. */
+function agentExited(before, after) {
+  if (!after?.foreground) return true;
+  if (isShellArgv(after.foreground.argv?.[0])) return true;
+  if (before?.foreground?.pid != null && after.foreground.pid !== before.foreground.pid) return true;
+  return false;
+}
+
 function gitDirOf(worktree) {
   const info = gitInfo(worktree);
   return info ? info.gitDir : null;
@@ -335,6 +353,8 @@ module.exports = {
   withFlags,
   resumeArgv,
   isValidResume,
+  isShellArgv,
+  agentExited,
   saveSleep,
   getSleep,
   clearSleep,
