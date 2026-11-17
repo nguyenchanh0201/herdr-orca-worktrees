@@ -19,6 +19,75 @@ function sp(id, {
   return { id, folder, machine, branch, named, name, active, tabs };
 }
 
+test("letterOf", () => {
+  const { letterOf } = g;
+  assert.equal(letterOf("Coduct.CTM.AdminPortal"), "A");
+  assert.equal(letterOf("Coduct.CTM.UserApp"), "U");
+  assert.equal(letterOf("herdr-orca-worktrees"), "H");
+  assert.equal(letterOf("x."), "X");
+  assert.equal(letterOf(""), "?");
+  assert.equal(letterOf("app.123"), "1");
+  assert.equal(letterOf("app.-server"), "S");
+  assert.equal(letterOf("app.---"), "A");
+});
+
+test("colorIndex is stable and in range", () => {
+  const { colorIndex } = g;
+  const a = colorIndex("/a/Coduct.CTM.Server", 8);
+  assert.equal(a, colorIndex("/a/Coduct.CTM.Server", 8));
+  assert.ok(a >= 0 && a < 8);
+});
+
+test("stripLogin", () => {
+  const { stripLogin } = g;
+  const L = ["jimmy-nguyen-codeleap", "nguyenchanh0201"];
+  assert.equal(stripLogin("nguyenchanh0201/feat-CTMN-197-add-comments", L), "feat-CTMN-197-add-comments");
+  assert.equal(stripLogin("NguyenChanh0201/x", L), "x");
+  assert.equal(stripLogin("feat/CTMN-199/manage", L), "feat/CTMN-199/manage");
+  assert.equal(stripLogin("feat/nguyenchanh0201/x", L), "feat/nguyenchanh0201/x");
+  assert.equal(stripLogin("nguyenchanh0201", L), "nguyenchanh0201");
+  assert.equal(stripLogin("nguyenchanh0201/", L), "nguyenchanh0201/");
+});
+
+test("label strips login from branch, not from a set name", () => {
+  const { label } = g;
+  const L = ["nguyenchanh0201"];
+  assert.equal(label({ branch: "nguyenchanh0201/explore", name: "x", named: false }, L), "explore");
+  assert.equal(label({ branch: "nguyenchanh0201/explore", name: "Mine", named: true }, L), "Mine");
+  assert.equal(label({ space: null, sleeping: { branch: "nguyenchanh0201/a" }, worktree: "/w/a" }, L), "a");
+  assert.equal(label({ space: sp("s", { branch: "nguyenchanh0201/explore" }) }, L), "explore");
+  assert.equal(label({ space: sp("s", { name: "nguyenchanh0201/Mine", named: true }) }, L), "nguyenchanh0201/Mine");
+  assert.equal(label({ name: "nguyenchanh0201/fallback", branch: null }, L), "nguyenchanh0201/fallback");
+});
+
+test("group carries saved name and icon", () => {
+  const spaces = [sp("admin", { folder: "/admin" }), sp("unsaved", { folder: "/unsaved" })];
+  const repoMap = {
+    "/admin": { primary: "/admin", linked: false },
+    "/unsaved": { primary: "/unsaved", linked: false },
+  };
+  const groups = g.group(spaces, (s) => s.folder, (p) => repoMap[p], {
+    saved: [
+      { path: "/admin", exists: true, name: "Admin", icon: "data/project-icons/x.png", iconSource: { source: "custom" } },
+      { path: "/saved-only", exists: false, name: "Saved", icon: "data/project-icons/y.png", iconSource: { source: "custom" } },
+      { path: "/nullable", exists: true, name: null, icon: null, iconSource: null },
+    ],
+  });
+  const [admin, unsaved, savedOnly, nullable] = groups;
+  assert.equal(admin.displayName, "Admin");
+  assert.equal(admin.icon, "data/project-icons/x.png");
+  assert.equal(admin.name, "admin");
+  assert.equal(admin.saved, true);
+  assert.equal(admin.exists, true);
+  assert.equal(unsaved.displayName, unsaved.name);
+  assert.equal(unsaved.icon, null);
+  assert.equal(savedOnly.displayName, "Saved");
+  assert.equal(savedOnly.icon, "data/project-icons/y.png");
+  assert.equal(savedOnly.exists, false);
+  assert.equal(nullable.displayName, "nullable");
+  assert.equal(nullable.icon, null);
+});
+
 test("placeOf uses first pane cwd of its tabs", () => {
   const space = sp("s1", { folder: "/fallback", tabs: [{ id: "t1" }] });
   const panes = [
@@ -304,6 +373,8 @@ test("saved-only group after space groups", () => {
   assert.deepEqual(groups[1], {
     key: "/s",
     name: "s",
+    displayName: "s",
+    icon: null,
     kind: "repo",
     primary: "/s",
     primarySpace: null,
@@ -347,6 +418,8 @@ test("missing saved keeps header", () => {
   assert.deepEqual(groups[0], {
     key: "/gone",
     name: "gone",
+    displayName: "gone",
+    icon: null,
     kind: "repo",
     primary: "/gone",
     primarySpace: null,

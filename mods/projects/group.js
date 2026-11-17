@@ -21,16 +21,38 @@ export function placeOf(space, panes = []) {
   return space.folder ?? "";
 }
 
-export function label(input) {
+export function letterOf(name) {
+  const last = name.split(".").filter(Boolean).pop() ?? "";
+  return (last.match(/[a-z0-9]/i)?.[0] ?? name.match(/[a-z]/i)?.[0] ?? "?").toUpperCase();
+}
+
+export function colorIndex(path, n) {
+  let hash = 0;
+  for (let i = 0; i < path.length; i++) {
+    hash = (Math.imul(hash, 31) + path.charCodeAt(i)) >>> 0;
+  }
+  return hash % n;
+}
+
+export function stripLogin(branch, logins) {
+  const slash = branch.indexOf("/");
+  if (slash > 0 && slash < branch.length - 1
+    && logins.some((login) => login.toLowerCase() === branch.slice(0, slash).toLowerCase())) {
+    return branch.slice(slash + 1);
+  }
+  return branch;
+}
+
+export function label(input, logins = []) {
   if (!input) return "";
   if ("space" in input) {
     if (input.space === null) {
-      return input.sleeping?.branch || repoName(input.worktree);
+      return input.sleeping?.branch ? stripLogin(input.sleeping.branch, logins) : repoName(input.worktree);
     }
     const s = input.space;
-    return s.named ? s.name : (s.branch ?? s.name);
+    return s.named ? s.name : (s.branch != null ? stripLogin(s.branch, logins) : s.name);
   }
-  return input.named ? input.name : (input.branch ?? input.name);
+  return input.named ? input.name : (input.branch != null ? stripLogin(input.branch, logins) : input.name);
 }
 
 export function visibleRows(g, collapsed) {
@@ -48,7 +70,7 @@ export function group(spaces = [], placeOf = (s) => s?.folder ?? "", repoOf = ()
   const savedByPath = new Map();
   for (const s of saved) {
     if (s && typeof s.path === "string" && !savedByPath.has(s.path)) {
-      savedByPath.set(s.path, Boolean(s.exists));
+      savedByPath.set(s.path, s);
     }
   }
   const sleeping = opts?.sleeping && typeof opts.sleeping === "object" ? opts.sleeping : null;
@@ -165,12 +187,12 @@ export function group(spaces = [], placeOf = (s) => s?.folder ?? "", repoOf = ()
     } else {
       if (savedByPath.has(g.key)) {
         g.saved = true;
-        g.exists = savedByPath.get(g.key);
+        g.exists = Boolean(savedByPath.get(g.key).exists);
       }
       result.push(g);
     }
   }
-  for (const [path, exists] of savedByPath) {
+  for (const [path, saved] of savedByPath) {
     if (!groupsMap.has(path)) {
       result.push({
         key: path,
@@ -180,12 +202,19 @@ export function group(spaces = [], placeOf = (s) => s?.folder ?? "", repoOf = ()
         primarySpace: null,
         rows: [],
         saved: true,
-        exists,
+        exists: Boolean(saved.exists),
       });
     }
   }
   if (otherGroup) {
     result.push(otherGroup);
+  }
+
+  for (const g of result) {
+    if (g.kind !== "repo") continue;
+    const saved = savedByPath.get(g.key);
+    g.displayName = saved?.name || g.name;
+    g.icon = saved?.icon ?? null;
   }
 
   if (sleeping) {
