@@ -155,22 +155,20 @@ export default class OrcaSetup extends View {
       .px(10)
       .gap(8)
       .items_center()
+      .justify_end()
       .bg(t.chrome)
       .border_t(1)
       .border_color(t.border)
       .text_size(12)
-      .child(div().flex_none().text_color(t.dim).child("orca"))
       .when(Boolean(this.status), (el) =>
         el.child(
           div()
-            .flex_1()
             .min_w(0)
             .truncate()
             .text_color(this.error ? t.blocked : t.muted)
             .child(this.status),
         ),
       )
-      .when(!this.status, (el) => el.child(div().flex_1()))
       .when(showRemove, (el) =>
         el.child(
           h_flex()

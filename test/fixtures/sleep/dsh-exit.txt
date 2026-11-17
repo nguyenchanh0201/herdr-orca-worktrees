@@ -1,0 +1,4 @@
+Goodbye from dsh-tui!
+To resume this session later:
+DSH_TUI_RESUME_SESSION=a83addba-a0dc-45f1-be00-1654dd4ab9bd dsh --profile dsh-tui
+~/projects/herdr-orca-worktrees ❯ 

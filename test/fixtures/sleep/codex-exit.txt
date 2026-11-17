@@ -1,0 +1,6 @@
+Token usage: total=12,450 input=9,800 (+ 4,200 cached) output=2,650
+To continue this session, run:
+
+[36mcodex resume 019a7c2b-4d8e-7f10-8a3c-9e1b2c3d4e5f[0m
+
+~/projects/herdr-orca-worktrees feat/projects-sidebar ❯ 

@@ -13,7 +13,7 @@ fi
 
 MODS=("$@")
 if [[ ${#MODS[@]} -eq 0 ]]; then
-  MODS=(orca-setup orca-remove)
+  MODS=(orca-setup orca-remove projects orca-worktree orca-project orca-usage orca-usage-panel orca-tabs)
 fi
 
 mkdir -p "$HERDR_APP_HOME/mods"
@@ -35,6 +35,13 @@ for m in "${MODS[@]}"; do
   if [[ -L "$dest" ]]; then
     rm -f "$dest"
   fi
-  mkdir -p "$dest"
-  rsync -a --delete "$src/" "$dest/"
+  if [[ -d "$dest" ]]; then
+    rsync -a --delete "$src/" "$dest/"
+  else
+    # Herdr docks a new mod folder the moment it appears; a half-copied one
+    # (main.js before mod.json) gets the default right dock. Move it in whole.
+    tmp="$(mktemp -d "$HERDR_APP_HOME/.install-XXXXXX")"
+    rsync -a "$src/" "$tmp/"
+    mv "$tmp" "$dest"
+  fi
 done

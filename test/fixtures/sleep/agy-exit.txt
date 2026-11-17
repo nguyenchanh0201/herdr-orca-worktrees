@@ -1,0 +1,6 @@
+Session ended.
+Resume with -c (or command below):
+
+  agy --conversation=b48e1f9a-2c3d-4e5f-8a9b-0c1d2e3f4a5b
+
+~/projects/herdr-orca-worktrees ❯ 
