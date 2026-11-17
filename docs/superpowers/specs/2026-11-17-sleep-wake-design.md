@@ -109,7 +109,7 @@ Stored at `<git rev-parse --git-dir of the worktree>/orca-sleep.json` (beside
 worktree):
 
 ```json
-{ "version": 1, "sleptAt": 1794890000000,
+{ "version": 1, "sleptAt": 1794890000000, "branch": "feat/x",
   "agents": [ { "terminal": "t1w", "tab": "tb…", "name": "Claude Code",
                 "kind": "claude", "cwd": "/…/feat-x",
                 "command": "claude --resume 3f2c…" } ] }
@@ -120,8 +120,11 @@ worktree):
   `sleep.js`'s patterns, kept in sync by a test, as `format.js` is).
 - `orca-wt sleep get <worktree>` → the record or `{ sleeping: false }`.
 - `orca-wt sleep clear <worktree>`.
-- `orca-wt sleep list <worktree>...` → `{ <worktree>: record }` for those
-  that sleep (one call per refresh for every open local space).
+- `orca-wt sleep list <repo>...` → `{ <worktree>: record & { repo } }` for
+  every worktree (main checkout included) of those repos whose git dir holds
+  an `orca-sleep.json` — found with `git -C <repo> worktree list --porcelain`,
+  so it covers worktrees whose space is closed (the person's choice (b)).
+  `projects` calls it once per refresh with every repo group's `primary`.
 
 ### Sleep (run by `projects`, request `{ id, kind: "sleep", space }`)
 
@@ -158,9 +161,16 @@ worktree):
 
 ### Sidebar
 
-- `projects` loads `orca-wt sleep list` for every open local space's worktree
+- `projects` loads `orca-wt sleep list` for every repo group (saved and open)
   on start, on `orca.projects.rev` change, and when the set of open spaces
   changes (no polling).
+- **Sleeping worktrees without a space** (the person chose to keep them, like
+  Orca): `group()` gets `opts.sleeping` (`{ <worktree>: record }` with
+  `repo`); a record whose worktree has no open space becomes a row
+  `{ space: null, worktree, sleeping: record, main: false }` in its repo's
+  group (after the space rows, by `sleptAt` newest first). Its label is the
+  worktree folder's branch (`record.branch`, saved at sleep time from
+  `space.branch`), else the folder name. Counts include them.
 - Sleeping row: 🌙 (`mods/projects/moon.svg`, stroke icon) in place of the
   status dot, label in `dim`, and one dim line per saved agent:
   `icon  Codex  · asleep` (icon from `knownAgents()` by kind).
@@ -171,12 +181,19 @@ worktree):
   **Wake** (when asleep), then **Space menu…** which opens Herdr's shipped
   space menu as today (`mod: "menu"`, `props: { tab: "space", target: { id } }`).
 - **Left-click a sleeping row** → `space.select` + wake (Orca wakes on
-  activation). Header Activity view lists sleeping agents last, dim, 🌙.
+  activation); a sleeping row with no space → wake creates the space.
+- Right-click a sleeping row with no space: **Wake** and **Forget sleep**
+  (`sleep clear`; the worktree itself is untouched). Header Activity view lists sleeping agents last, dim, 🌙.
 
 ### Wake (run by `projects`, request `{ id, kind: "wake", space }`)
 
 1. Read the record; none → nothing. Mark this worktree "waking" in memory
    (ignore a second wake request until done).
+   - **No open space for the worktree** → `run("space.new", { folder:
+     worktree, tab: first.name, argv: resumeArgv(first.command) })`, then
+     find the new space in `spaces()` by folder (poll ≤ 3 s in `check()`), and
+     `tab.new` each other agent in it (`name`, `folder: cwd`, `argv`). No
+     `name` on `space.new`, so it nests under its repo.
 2. Per agent: `hc get <terminal>`: live and its foreground is a shell →
    `hc send <terminal> <command>`. Otherwise (terminal gone after a restart or
    reboot) → `run("tab.new", { space, name, folder: cwd, argv:
@@ -209,6 +226,9 @@ worktree):
   Claude's real exit text captured (adjust its pattern if it prints one).
 
 ## Review notes
+
+The person chose (b): sleeping worktrees stay listed under their project even
+after their space is closed; waking one reopens the space.
 
 Builder check (2026-11-17) — settled as my calls: keep useful launch flags on
 wake (`--no-daemon` for Codex, permission/model/effort flags); the person's
