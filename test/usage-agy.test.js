@@ -18,6 +18,17 @@ describe("versionAtLeast", () => {
 });
 
 describe("parseAgyUsage", () => {
+  it("parses the real agy 1.5.9 shape (groups under command.data)", () => {
+    const stdout = fs.readFileSync(path.join(FIXTURES, "agy-real-1.5.9.json"), "utf8");
+    const r = parseAgyUsage(stdout, "");
+    assert.equal(r.stopAsking, undefined);
+    assert.equal(r.windows.length, 1);
+    assert.equal(r.windows[0].label, "Gemini Models");
+    assert.equal(r.windows[0].minutes, 10080);
+    assert.equal(r.windows[0].usedPercent, 21);
+    assert.equal(r.windows[0].resetsAt, Date.parse("2026-11-20T23:49:55Z"));
+  });
+
   it("parses one-bucket group using group name", () => {
     const stdout = fs.readFileSync(path.join(FIXTURES, "agy-one-bucket.json"), "utf8");
     const parsed = parseAgyUsage(stdout, "");

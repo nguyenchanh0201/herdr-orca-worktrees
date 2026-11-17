@@ -63,7 +63,9 @@ function parseAgyUsage(stdout = "", stderr = "") {
   if (usageObj) {
     if (usageObj.status === "SUCCESS") {
       const windows = [];
-      const groups = Array.isArray(usageObj.groups) ? usageObj.groups : [];
+      // agy puts groups under command.data (1.5.9); top-level kept for older builds.
+      const data = usageObj.command && usageObj.command.data;
+      const groups = Array.isArray(data && data.groups) ? data.groups : Array.isArray(usageObj.groups) ? usageObj.groups : [];
       for (const group of groups) {
         if (!group || typeof group !== "object") continue;
         const buckets = Array.isArray(group.buckets) ? group.buckets : [];
