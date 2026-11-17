@@ -487,9 +487,9 @@ assertBoth("atPrompt accepts idle and done hc states only", (mod) => {
 assertBoth("quitArgv quits codex with ctrl+d and the rest with a typed command", (mod) => {
   const r = ["codex", "claude", "agy"].map((k) => mod.quitArgv(k, "t1"));
   assert.deepEqual(r, [
-    ["keys", "t1", "ctrl+d"],
-    ["send", "t1", "/exit"],
-    ["send", "t1", "/quit"],
+    ["keys", "--json", "t1", "ctrl+d"],
+    ["send", "--json", "t1", "/exit"],
+    ["send", "--json", "t1", "/quit"],
   ]);
   return r;
 });

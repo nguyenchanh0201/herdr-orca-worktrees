@@ -311,7 +311,7 @@ export default class Projects extends View {
           let sent = null;
           try {
             const sr = await exec("hc", quitArgv(kind, t), { timeout: 5000 });
-            if (sr.code === 0) sent = JSON.parse(sr.stdout || "{}").started !== false;
+            if (sr.code === 0) sent = !/"started"\s*:\s*false/.test(sr.stdout || "");
           } catch {}
           if (sent === null) {
             return { ok: false, name, reason: "has unsent text — clear it and sleep again" };

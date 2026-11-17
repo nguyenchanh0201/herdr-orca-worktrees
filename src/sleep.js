@@ -133,7 +133,7 @@ function atPrompt(state) {
 
 /** hc argv that quits an idle agent. Codex gets ctrl+d: a pasted "/quit" goes to the model and can open its rate-limit dialog, and ctrl+d only quits when the input is empty. */
 function quitArgv(kind, t) {
-  return kind === "codex" ? ["keys", t, "ctrl+d"] : ["send", t, QUIT[kind]];
+  return kind === "codex" ? ["keys", "--json", t, "ctrl+d"] : ["send", "--json", t, QUIT[kind]];
 }
 
 /** Insert kept flags right after the program word (unless dsh or env-prefixed). */
