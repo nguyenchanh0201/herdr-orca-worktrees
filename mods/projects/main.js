@@ -1012,6 +1012,7 @@ export default class Projects extends View {
         }
 
         const sections = projectGroups(displayGroups, this.options.sort);
+        const groupNames = sections.filter((s) => Boolean(s.name)).map((s) => s.name);
         for (const section of sections) {
           const isGroup = Boolean(section.key);
           const groupCollapsed = isGroup && this.collapsed.has(section.key);
@@ -1023,7 +1024,7 @@ export default class Projects extends View {
               continue;
             }
             const isCollapsed = groupCollapsed || this.collapsed.has(g.key);
-            children.push(this.renderHeader(g, isCollapsed, t, children.length === 0, isGroup));
+            children.push(this.renderHeader(g, isCollapsed, t, children.length === 0, isGroup, groupNames));
             const rows = visibleRows(g, isCollapsed);
             for (const row of rows) {
               if (row.space?.active) {
@@ -1091,7 +1092,7 @@ export default class Projects extends View {
       .child(div().flex_1().min_w(0).truncate().font_bold().text_color(t.foreground).child(section.name));
   }
 
-  renderHeader(g, isCollapsed, t, first = false, indented = false) {
+  renderHeader(g, isCollapsed, t, first = false, indented = false, groupNames = []) {
     const missing = g.kind === "repo" && g.exists === false;
     const head = h_flex()
       .id(`project-header-${g.key}`)
@@ -1114,7 +1115,14 @@ export default class Projects extends View {
             kind: "popup",
             width: 220,
             height: 150,
-            props: { mode: "header", path: g.primary, saved: Boolean(g.saved), name: g.displayName },
+            props: {
+              mode: "header",
+              path: g.primary,
+              saved: Boolean(g.saved),
+              name: g.displayName,
+              group: g.group ?? null,
+              groups: groupNames,
+            },
           });
         })
       )

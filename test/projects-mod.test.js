@@ -204,7 +204,7 @@ test('header right-click opens expanded popup with the display name', async () =
   await h.flush();
   const tree = h.view.renderHeader({ kind: 'repo', key: 'r', primary: '/repo', saved: true, displayName: 'Admin Portal', rows: [] }, false, {});
   tree.attrs.on_mouse_down[1]({}, h.cx);
-  assert.deepEqual(h.state.overlays, [{ open: { mod: 'orca-project', kind: 'popup', width: 220, height: 150, props: { mode: 'header', path: '/repo', saved: true, name: 'Admin Portal' } } }]);
+  assert.deepEqual(h.state.overlays, [{ open: { mod: 'orca-project', kind: 'popup', width: 220, height: 150, props: { mode: 'header', path: '/repo', saved: true, name: 'Admin Portal', group: null, groups: [] } } }]);
 });
 
 // Catches actions on unsaved groups, missing/reordered rows, or incorrect dialog contracts.
@@ -212,13 +212,13 @@ test('saved header menu closes before opening rename/icon dialogs; unsaved only 
   for (const [label, mode, height, extra] of [['Rename…', 'rename', 160, { name: 'Admin Portal' }], ['Change icon…', 'icon', 260, {}]]) {
     const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin Portal' });
     const tree = h.view.render();
-    assert.deepEqual(texts(tree), ['Open in', '›', 'Rename…', 'Change icon…', 'Remove from sidebar']);
+    assert.deepEqual(texts(tree), ['Open in', '›', 'Project Group', '›', 'Rename…', 'Change icon…', 'Remove from sidebar']);
     nodes(tree).find(n => n.attrs.on_click && texts(n).includes(label)).attrs.on_click({}, h.cx);
     assert.deepEqual(h.state.overlays, [{ close: 'menu' }, { open: { mod: 'orca-project', kind: 'dialog', width: 420, height, props: { mode, path: '/repo', ...extra } } }]);
   }
   const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: false, path: '/repo' });
-  assert.deepEqual(texts(h.view.render()), ['Open in', '›', 'Not saved — it shows while its spaces are open']);
-  assert.equal(nodes(h.view.render()).filter(n => n.attrs.on_click).length, 1);
+  assert.deepEqual(texts(h.view.render()), ['Open in', '›', 'Project Group', '›', 'Not saved — it shows while its spaces are open']);
+  assert.equal(nodes(h.view.render()).filter(n => n.attrs.on_click).length, 2);
 });
 
 // Catches lost prefill/retention, missing submit binding, empty-name rejection, or absent refresh/close.
@@ -611,6 +611,84 @@ test('Customize apps saves the checked ids', async () => {
   await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Save')).attrs.on_click({}, h.cx);
   await h.flush();
   assert.deepEqual(Array.from(h.state.calls.at(-1).args), ['apps', 'set', 'finder']);
+  assert.deepEqual(h.state.overlays, [{ close: 'dlg' }]);
+});
+
+test('header menu shows Project Group ›', async () => {
+  const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin' });
+  const t = texts(h.view.render());
+  assert.ok(t.includes('Project Group'));
+});
+
+test('group popup lists actions and other groups', async () => {
+  const h = await harness(undefined, {
+    overlay: 'sub',
+    mode: 'group',
+    path: '/r',
+    name: 'Admin',
+    group: 'CTM group',
+    groups: ['CTM group', 'Tools'],
+    parent: 'menu',
+  });
+  const t = texts(h.view.render());
+  assert.deepEqual(t, ['New group from project…', 'Remove from group', 'Move to group', '●', 'Tools']);
+  assert.ok(!t.includes('CTM group'));
+});
+
+test('group popup for an ungrouped project hides Remove', async () => {
+  const h = await harness(undefined, {
+    overlay: 'sub',
+    mode: 'group',
+    path: '/r',
+    name: 'Admin',
+    group: null,
+    groups: ['CTM group', 'Tools'],
+    parent: 'menu',
+  });
+  const t = texts(h.view.render());
+  assert.ok(!t.includes('Remove from group'));
+  assert.deepEqual(t, ['New group from project…', 'Move to group', '●', 'CTM group', '●', 'Tools']);
+});
+
+test('Move to group runs set-group and refreshes', async () => {
+  const h = await harness(undefined, {
+    overlay: 'sub',
+    mode: 'group',
+    path: '/r',
+    name: 'Admin',
+    group: 'CTM group',
+    groups: ['CTM group', 'Tools'],
+    parent: 'menu',
+  });
+  const tree = h.view.render();
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Tools')).attrs.on_click({}, h.cx);
+  assert.deepEqual(Array.from(h.state.calls.at(-1).args), ['projects', 'set-group', '/r', 'Tools']);
+  assert.equal(typeof h.state.shared.get('orca.projects.rev'), 'number');
+  assert.deepEqual(h.state.overlays, [{ close: 'sub' }, { close: 'menu' }]);
+});
+
+test('new group dialog prefills, rejects duplicates, creates', async () => {
+  const h = await harness(undefined, {
+    overlay: 'dlg',
+    mode: 'new-group',
+    path: '/r',
+    name: 'Coduct.CTM.UserApp',
+    groups: ['CTM group'],
+  });
+  let tree = h.view.render();
+  const input = nodes(tree).find((n) => n.kind === 'Input')?.path;
+  assert.equal(input?.value(), 'Coduct.CTM.UserApp group');
+
+  input.set_value('ctm GROUP');
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Create')).attrs.on_click({}, h.cx);
+  assert.equal(h.state.calls.length, 0);
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('A group with that name already exists — use Move to group'));
+
+  input.set_value('New one');
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Create')).attrs.on_click({}, h.cx);
+  assert.deepEqual(Array.from(h.state.calls.at(-1).args), ['projects', 'set-group', '/r', 'New one']);
+  assert.equal(typeof h.state.shared.get('orca.projects.rev'), 'number');
   assert.deepEqual(h.state.overlays, [{ close: 'dlg' }]);
 });
 
