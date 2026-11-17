@@ -1,9 +1,25 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared, pickFolder, notify } from "herdr";
+import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared, pickFolder, notify, home, appHome, readTextFile } from "herdr";
 import { placeOf, group, visibleRows, label, agentsBySpace, sinceUpdate, elapsed } from "./group.js";
 import { findNode, sidebarStep } from "./sidebar.js";
 import config from "./config.js";
+
+async function worktreeRoot() {
+  const raw = await readTextFile(`${appHome()}/settings.json`);
+  const directory = (raw === null ? {} : JSON.parse(raw))?.worktrees?.directory ?? "~/.herdr/worktrees";
+  if (typeof directory !== "string" || !directory.trim()) {
+    throw new Error("worktrees.directory must be a non-empty path.");
+  }
+  let p = directory.replace(/\\/g, "/");
+  if (p === "~" || p.startsWith("~/")) {
+    p = home().replace(/\\/g, "/").replace(/\/$/, "") + p.slice(1);
+  }
+  if (!p.startsWith("/") && !/^[A-Za-z]:\//.test(p)) {
+    throw new Error("worktrees.directory must be an absolute path or start with ~/.");
+  }
+  return p.replace(/\/+$/, "");
+}
 
 export default class Projects extends View {
   init(_p, cx) {
@@ -25,6 +41,7 @@ export default class Projects extends View {
     this.lastActive = null;
     this.since = new Map();
     this.sig = "";
+    this.reposSig = "";
     this.side = { seenWide: false, hidden: null };
     this.saved = [];
     this.seeded = null;
@@ -112,6 +129,35 @@ export default class Projects extends View {
             setShared("orca.projects.clone", { id: q.id, state: "done" });
             notify({ title: "Project added", body: q.name });
             setShared("orca.projects.rev", Date.now());
+          }
+        } else if (q.kind === "worktree") {
+          setShared("orca.projects.worktree", { id: q.id, state: "running" });
+          try {
+            const root = await worktreeRoot();
+            const args = [
+              "worktree-add",
+              q.repo,
+              "--base",
+              q.base,
+              ...(q.name ? ["--name", q.name] : []),
+              "--root",
+              root,
+            ];
+            const res = await this.cli(args, 600000);
+            if (res.error) {
+              setShared("orca.projects.worktree", { id: q.id, state: "error", error: res.error });
+              notify({ title: "Create worktree", body: res.error, level: "error" });
+            } else {
+              run("space.new", {
+                folder: res.path,
+                ...(q.agent ? { tab: q.agent.name, argv: q.agent.run } : {}),
+              });
+              setShared("orca.projects.worktree", { id: q.id, state: "done" });
+            }
+          } catch (e) {
+            const err = String(e?.message ?? e);
+            setShared("orca.projects.worktree", { id: q.id, state: "error", error: err });
+            notify({ title: "Create worktree", body: err, level: "error" });
           }
         }
       });
@@ -293,6 +339,15 @@ export default class Projects extends View {
         }
       );
 
+      const repos = groups
+        .filter((g) => g.kind === "repo")
+        .map((g) => ({ key: g.key, name: g.name, primary: g.primary }));
+      const reposSig = JSON.stringify(repos);
+      if (reposSig !== this.reposSig) {
+        this.reposSig = reposSig;
+        setShared("orca.projects.repos", repos);
+      }
+
       const currentIds = new Set(sps.map((s) => s.id));
       for (const id of this.keyOf.keys()) {
         if (!currentIds.has(id)) this.keyOf.delete(id);
@@ -404,11 +459,11 @@ export default class Projects extends View {
           .on_click((_e, cx) => {
             cx.stop_propagation();
             openOverlay({
-              mod: "orca-new",
-              kind: "popup",
-              width: 250,
-              height: 260,
-              props: { folder: g.primary },
+              mod: "orca-worktree",
+              kind: "dialog",
+              width: 560,
+              height: 420,
+              props: { repo: g.primary },
             });
           })
           .child("+")
