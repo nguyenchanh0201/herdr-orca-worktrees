@@ -157,6 +157,20 @@ The bottom row `orca-strip` (28 px) becomes:
   appears top-left right after the window buttons, no gap; click → sidebar
   back; `main` layout unchanged.
 
+## Review notes
+
+Builder check (2026-11-17): nothing important left. Settled details:
+- Panel window naming checks the `Fable` label before the 10080 → `Weekly`
+  rule (Fable is also 10080 min).
+- The strip publishes its saved mode to `orca.usage.mode` on start, so the
+  panel's switch shows the right side after a restart.
+- `orca-tabs` keeps its own per-space Files/Changes panel memory (starts
+  fresh once; not shared with `main`) — accepted.
+- Chip fitting measures chips by mode: Detailed chips are wider (agy can have
+  4+ windows); drop lowest-used chips until they fit.
+- The 760×420 popup opens at the pointer from the bottom strip; confirm it
+  stays on screen in the manual check (shrink width if not).
+
 ## Left to the builder
 
 - Exact paddings/radii within theme colours; the refresh icon choice.
