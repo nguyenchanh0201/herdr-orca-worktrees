@@ -42,7 +42,11 @@ async function harness(respond = () => ({}), overlayProps = null) {
       return input;
     } },
     Input: { new: input => element('Input', input) },
-    theme: () => ({}), home: () => '/home', appHome: () => '/app', readTextFile: async () => null,
+    theme: () => ({
+      blocked: 'c-blocked', working: 'c-working', done: 'c-done', idle: 'c-idle', unknown: 'c-unknown',
+      selected: 'c-selected', hover: 'c-hover', border: 'c-border', muted: 'c-muted', dim: 'c-dim',
+      foreground: 'c-fg', chrome: 'c-chrome',
+    }), home: () => '/home', appHome: () => '/app', readTextFile: async () => null,
     config: { node: 'node', cli: 'cli' },
     exec: async (_cmd, argv, options) => {
       const args = argv.slice(1);
@@ -332,8 +336,10 @@ test('worktree card folds agents into a strip by default', async () => {
   assert.ok(t.includes('!'));
   assert.ok(t.includes('›'));
   assert.ok(!t.includes('Done - Claude'));
-  const strip = nodes(tree).find((n) => n.attrs.id === 'strip-/r');
+  const strip = nodes(tree).find((n) => n.attrs.id === 'strip-s1');
   assert.ok(strip);
+  const glyph = strip.kids.find((n) => texts(n).includes('!'));
+  assert.equal(glyph?.attrs.text_color, 'c-blocked');
   const icons = nodes(strip).filter((n) => n.kind === 'image' || n.kind === 'svg');
   assert.equal(icons.length, 2);
 });
@@ -341,7 +347,7 @@ test('worktree card folds agents into a strip by default', async () => {
 test('clicking the strip unfolds and remembers it', async () => {
   const h = await cardHarness();
   let tree = h.view.render();
-  const strip = nodes(tree).find((n) => n.attrs.id === 'strip-/r');
+  const strip = nodes(tree).find((n) => n.attrs.id === 'strip-s1');
   strip.attrs.on_click({}, h.cx);
   assert.equal(h.view.agentsOpen.has('/r'), true);
   assert.deepEqual(h.state.storageSets.at(-1), ['projects.agentsOpen', JSON.stringify(['/r'])]);
@@ -352,7 +358,7 @@ test('clicking the strip unfolds and remembers it', async () => {
   assert.ok(t.includes('Blocked - Codex'));
   assert.ok(t.includes('Done - Claude'));
 
-  const head = nodes(tree).find((n) => n.attrs.id === 'agents-head-/r');
+  const head = nodes(tree).find((n) => n.attrs.id === 'agents-head-s1');
   head.attrs.on_click({}, h.cx);
   assert.equal(h.view.agentsOpen.has('/r'), false);
   assert.deepEqual(h.state.storageSets.at(-1), ['projects.agentsOpen', JSON.stringify([])]);
@@ -400,5 +406,81 @@ test('sleeping worktree card shows a dimmed strip with a moon', async () => {
   const req = h.state.shared.get('orca.projects.request');
   assert.equal(req.kind, 'wake');
   assert.equal(req.worktree, '/wt/s');
+});
+
+test('scroll_to_item targets the active card index after a fold toggle', async () => {
+  const h = await cardHarness();
+  h.state.spaces = [
+    { id: 's1', folder: '/r', machine: null, branch: 'main', named: false, name: 's1', active: true, tabs: [] },
+    { id: 's2', folder: '/wt/2', machine: null, branch: 'feat/2', named: false, name: 's2', active: false, tabs: [] },
+  ];
+  h.view.repo.set('/wt/2', { primary: '/r', linked: true });
+  h.view.render();
+  assert.equal(h.state.scrolls.at(-1), 1);
+
+  h.view.toggleAgents('/r', h.cx);
+  h.state.spaces[0].active = false;
+  h.state.spaces[1].active = true;
+  h.view.render();
+  assert.equal(h.state.scrolls.at(-1), 2);
+});
+
+test('card with >5 agents caps strip icons at 5 and shows +N', async () => {
+  const h = await cardHarness();
+  h.state.agents = Array.from({ length: 7 }, (_, i) => ({
+    address: `a${i}`, space: 's1', pane: `p${i}`, status: 'idle', program: { name: 'Claude', icon: 'icons/claude.svg' },
+  }));
+  const strip = nodes(h.view.render()).find((n) => n.attrs.id === 'strip-s1');
+  const icons = nodes(strip).filter((n) => n.kind === 'image' || n.kind === 'svg');
+  assert.equal(icons.length, 5);
+  assert.ok(texts(strip).includes('+2'));
+});
+
+test('unknown or missing agent status falls back to idle glyph in unknown color', async () => {
+  const h = await cardHarness();
+  h.state.agents = [
+    { address: 'a1', space: 's1', pane: 'p1', status: 'weird', program: { name: 'Claude', icon: 'icons/claude.svg' } },
+    { address: 'a2', space: 's1', pane: 'p2', program: { name: 'Codex', icon: 'icons/codex.svg' } },
+  ];
+  let tree = h.view.render();
+  const strip = nodes(tree).find((n) => n.attrs.id === 'strip-s1');
+  const stripGlyph = strip.kids.find((n) => texts(n).includes('○'));
+  assert.equal(stripGlyph?.attrs.text_color, 'c-unknown');
+
+  h.view.agentsOpen.add('/r');
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('Weird - Claude'));
+  assert.ok(texts(tree).includes('Unknown - Codex'));
+});
+
+test('remote space renders machine chip, toggles with empty folder, and isolates shared folder ids', async () => {
+  const h = await harness();
+  await h.flush();
+  h.state.spaces = [
+    { id: 'r1', folder: '', machine: 'vps', branch: 'main', named: false, name: 'r1', active: false, tabs: [] },
+    { id: 'r2', folder: '', machine: 'vps', branch: 'dev', named: false, name: 'r2', active: false, tabs: [] },
+  ];
+  h.state.agents = [
+    { address: 'a1', space: 'r1', pane: 'p1', status: 'working', program: { name: 'Claude', icon: 'icons/claude.svg' } },
+    { address: 'a2', space: 'r2', pane: 'p2', status: 'done', program: { name: 'Codex', icon: 'icons/codex.svg' } },
+  ];
+  let tree = h.view.render();
+  assert.ok(texts(tree).includes('vps'));
+  const strip1 = nodes(tree).find((n) => n.attrs.id === 'strip-r1');
+  const strip2 = nodes(tree).find((n) => n.attrs.id === 'strip-r2');
+  assert.ok(strip1 && strip2);
+  strip1.attrs.on_click({}, h.cx);
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('Working - Claude'));
+  assert.ok(!texts(tree).includes('Done - Codex'));
+});
+
+test('active card paints selected background once on card and not on inner title row', async () => {
+  const h = await cardHarness();
+  const tree = h.view.render();
+  const card = nodes(tree).find((n) => n.attrs.id === 'card-s1');
+  const title = nodes(tree).find((n) => n.attrs.id === 'space-s1');
+  assert.equal(card?.attrs.bg, 'c-selected');
+  assert.equal(title?.attrs.bg, undefined);
 });
 

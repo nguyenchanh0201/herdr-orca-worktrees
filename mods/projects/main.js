@@ -1138,7 +1138,6 @@ export default class Projects extends View {
       .items_center()
       .rounded(6)
       .cursor_pointer()
-      .when(active, (el) => el.bg(t.selected))
       .when(!active, (el) => el.hover((s) => s.bg(t.hover)))
       .when(sleeping, (el) =>
         el.on_click(() => {
@@ -1214,12 +1213,14 @@ export default class Projects extends View {
     const active = Boolean(space?.active);
     const sleeping = Boolean(row.sleeping);
     const worktree = opts.worktree ?? row.worktree ?? "";
+    const cardKey = space?.id ?? row.worktree ?? worktree;
+    const foldKey = worktree ? (space?.machine ? `${space.machine}:${worktree}` : worktree) : cardKey;
     const live = !sleeping && space ? rowAgents : [];
     const sleepList = sleeping ? (sleepingAgents ?? []) : [];
     const count = sleeping ? sleepList.length : live.length;
 
     const card = v_flex()
-      .id(`card-${space?.id ?? row.worktree}`)
+      .id(`card-${cardKey}`)
       .rounded(8)
       .border(1)
       .border_color(t.border)
@@ -1231,11 +1232,11 @@ export default class Projects extends View {
 
     if (count === 0) return card;
 
-    const open = Boolean(worktree) && this.agentsOpen.has(worktree);
+    const open = Boolean(foldKey) && this.agentsOpen.has(foldKey);
     if (!open) {
       const { icons, more } = agentSummary(sleeping ? sleepList : live);
       const strip = h_flex()
-        .id(`strip-${worktree}`)
+        .id(`strip-${cardKey}`)
         .h(24)
         .px(8)
         .gap(6)
@@ -1243,7 +1244,7 @@ export default class Projects extends View {
         .rounded(6)
         .bg(t.hover)
         .cursor_pointer()
-        .on_click((_e, cx) => this.toggleAgents(worktree, cx));
+        .on_click((_e, cx) => this.toggleAgents(foldKey, cx));
 
       if (sleeping) {
         strip.child(svg("mods/projects/moon.svg").size(13).flex_none().text_color(t.dim));
@@ -1272,14 +1273,14 @@ export default class Projects extends View {
     }
 
     const head = h_flex()
-      .id(`agents-head-${worktree}`)
+      .id(`agents-head-${cardKey}`)
       .h(24)
       .px(8)
       .items_center()
       .rounded(6)
       .cursor_pointer()
       .hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => this.toggleAgents(worktree, cx))
+      .on_click((_e, cx) => this.toggleAgents(foldKey, cx))
       .child(div().flex_1().text_size(11).text_color(t.muted).child(`${count} agent${count === 1 ? "" : "s"}`))
       .child(div().flex_none().text_color(t.dim).child("⌄"));
     card.child(head);
