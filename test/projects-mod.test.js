@@ -506,3 +506,13 @@ test('agent strip has no background until hover', async () => {
   assert.equal(strip.attrs.bg, undefined);
   assert.ok(strip.attrs.hover);
 });
+
+test('new worktree starts its agent with the full-access flag', async () => {
+  const h = await harness(args => args[0] === 'worktree-add' ? { path: '/wt/new' } : {});
+  await h.flush();
+  h.state.shared.set('orca.projects.request', { id: 7, kind: 'worktree', repo: '/r', base: 'main', name: '', agent: { name: 'Codex', run: ['codex', '--no-daemon'] } });
+  h.view.check(h.cx);
+  await h.flush();
+  const created = h.state.runs.find(r => r.cmd === 'space.new');
+  assert.deepEqual(Array.from(created.args.argv), ['codex', '--dangerously-bypass-approvals-and-sandbox', '--no-daemon']);
+});

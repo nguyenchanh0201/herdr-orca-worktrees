@@ -2,7 +2,14 @@ import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared, pickFolder, notify, home, appHome, readTextFile, knownAgents } from "herdr";
 import { placeOf, group, visibleRows, label, letterOf, colorIndex, agentsBySpace, sinceUpdate, elapsed, activitySort, attentionCount, sortGroups, hideMainRows, topStatus, agentSummary, STATUS_GLYPH } from "./group.js";
-import { QUIT, agentKind, parseResume, fallbackResume, keptFlags, withFlags, resumeArgv, stripAnsi, isShellArgv, agentExited } from "./sleep.js";
+import { QUIT, agentKind, parseResume, fallbackResume, keptFlags, fullAccessFlags, withFlags, resumeArgv, stripAnsi, isShellArgv, agentExited } from "./sleep.js";
+
+// Agents our tools start get full access: the flag goes right after the program word.
+function fullAccessArgv(run) {
+  if (!Array.isArray(run) || run.length === 0) return run;
+  const kind = agentKind({ app: String(run[0]).split("/").pop() });
+  return [run[0], ...fullAccessFlags(kind, run), ...run.slice(1)];
+}
 import { findNode, sidebarStep } from "./sidebar.js";
 import config from "./config.js";
 
@@ -345,6 +352,7 @@ export default class Projects extends View {
           }
 
           const flags = keptFlags(kind, argv);
+          flags.push(...fullAccessFlags(kind, flags));
           const command = withFlags(kind, resume, flags);
           return {
             ok: true,
@@ -598,7 +606,7 @@ export default class Projects extends View {
             } else {
               run("space.new", {
                 folder: res.path,
-                ...(q.agent ? { tab: q.agent.name, argv: q.agent.run } : {}),
+                ...(q.agent ? { tab: q.agent.name, argv: fullAccessArgv(q.agent.run) } : {}),
               });
               setShared("orca.projects.worktree", { id: q.id, state: "done" });
             }

@@ -464,3 +464,16 @@ test("CLI sleep save, get, clear and codex-session", (t) => {
   const cs = runCli(["codex-session", "/tmp/nonexistent-cwd-for-orca-test", String(Date.now())]);
   assert.deepEqual(cs, { id: null });
 });
+
+assertBoth("fullAccessFlags returns the missing full-access flag per agent", (mod) => {
+  assert.deepEqual(mod.fullAccessFlags("claude", ["claude"]), ["--dangerously-skip-permissions"]);
+  assert.deepEqual(mod.fullAccessFlags("codex", ["codex", "--no-daemon"]), ["--dangerously-bypass-approvals-and-sandbox"]);
+  assert.deepEqual(mod.fullAccessFlags("agy", []), ["--dangerously-skip-permissions"]);
+  assert.deepEqual(mod.fullAccessFlags("claude", ["--dangerously-skip-permissions"]), []);
+  assert.deepEqual(mod.fullAccessFlags("dsh", []), []);
+  assert.deepEqual(mod.fullAccessFlags(null, []), []);
+  const kept = mod.keptFlags("codex", ["codex", "--no-daemon"]);
+  const cmd = mod.withFlags("codex", "codex resume abc", [...kept, ...mod.fullAccessFlags("codex", kept)]);
+  assert.equal(cmd, "codex --no-daemon --dangerously-bypass-approvals-and-sandbox resume abc");
+  return cmd;
+});

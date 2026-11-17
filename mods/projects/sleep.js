@@ -105,6 +105,18 @@ export function keptFlags(kind, argv) {
   return out;
 }
 
+const FULL_ACCESS = {
+  claude: ["--dangerously-skip-permissions"],
+  codex: ["--dangerously-bypass-approvals-and-sandbox"],
+  agy: ["--dangerously-skip-permissions"],
+};
+
+/** Full-access flags for kind that are missing from existing (DeepSeek TUI has none). */
+export function fullAccessFlags(kind, existing) {
+  const have = Array.isArray(existing) ? existing : [];
+  return (FULL_ACCESS[kind] ?? []).filter((f) => !have.includes(f));
+}
+
 /** Insert kept flags right after the program word (unless dsh or env-prefixed). */
 export function withFlags(kind, command, flags) {
   if (!command || !Array.isArray(flags) || flags.length === 0 || kind === "dsh") {
