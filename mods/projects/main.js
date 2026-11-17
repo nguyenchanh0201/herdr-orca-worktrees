@@ -1235,7 +1235,10 @@ export default class Projects extends View {
       .p(2)
       .gap(2)
       .mb(2)
-      .rounded(6)
+      .rounded(8)
+      // The selected card gets Orca's outline; others keep an invisible one so selecting never shifts them.
+      .border(1)
+      .border_color(active ? t.border : "#00000000")
       .when(active, (el) => el.bg(t.selected))
       .when(!active, (el) => el.hover((s) => s.bg(t.hover)))
       .child(this.renderRow(row, t, opts));

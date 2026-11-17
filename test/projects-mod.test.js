@@ -484,11 +484,16 @@ test('active card paints selected background once on card and not on inner title
   assert.equal(title?.attrs.bg, undefined);
 });
 
-test('worktree cards are indented and borderless', async () => {
+test('worktree cards are indented; only the selected one shows its border', async () => {
   const h = await cardHarness();
   const card = nodes(h.view.render()).find((n) => n.attrs.id === 'card-s1');
   assert.ok(card.attrs.ml > 0);
-  assert.equal(card.attrs.border, undefined);
+  assert.equal(card.attrs.border, 1);
+  assert.equal(card.attrs.border_color, 'c-border');
+  h.state.spaces[0].active = false;
+  const idle = nodes(h.view.render()).find((n) => n.attrs.id === 'card-s1');
+  assert.equal(idle.attrs.border, 1, 'same width, so selecting never shifts the card');
+  assert.equal(idle.attrs.border_color, '#00000000');
 });
 
 test('status-less worktree shows the dim dot in a fixed slot', async () => {
