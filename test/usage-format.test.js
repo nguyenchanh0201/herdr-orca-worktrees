@@ -9,6 +9,8 @@ const {
   chipText,
   windowName,
   updatedText,
+  windowShort,
+  detailLines,
 } = require("../src/usage/format");
 
 test("until formats durations and edge cases", () => {
@@ -70,10 +72,32 @@ test("headline formats highest-utilization window and empty/error states", () =>
   assert.equal(headline({ status: "error", windows: [] }, now), "");
 });
 
-test("barColor maps usage percentage to ANSI color names", () => {
-  assert.equal(barColor(79), "muted");
-  assert.equal(barColor(80), "ansi3");
-  assert.equal(barColor(90), "ansi1");
+test("barColor: red from 80, yellow from 60", () => {
+  assert.equal(barColor(59), "muted");
+  assert.equal(barColor(60), "ansi3");
+  assert.equal(barColor(79), "ansi3");
+  assert.equal(barColor(80), "ansi1");
+});
+
+test("windowShort", () => {
+  assert.equal(windowShort({ label: "Session", minutes: 300 }), "5h");
+  assert.equal(windowShort({ label: "Weekly", minutes: 10080 }), "wk");
+  assert.equal(windowShort({ label: "Fable", minutes: 10080 }), "Fable"); // label wins
+  assert.equal(windowShort({ label: "Pro", minutes: 0 }), "Pro");
+});
+
+test("detailLines: one line for claude/codex, one per window for agy", () => {
+  const w = (label, minutes, usedPercent) => ({ label, minutes, usedPercent, resetsAt: null });
+  assert.deepEqual(
+    detailLines({ id: "claude", windows: [w("5h", 300, 85.4), w("Weekly", 10080, 64), w("Fable", 10080, 120)] }),
+    [[{ label: "5h", pct: 85 }, { label: "wk", pct: 64 }, { label: "Fable", pct: 100 }]]
+  );
+  assert.deepEqual(
+    detailLines({ id: "agy", windows: [w("Gemini Models · Weekly Limit Remaining", 10080, 27), w("Gemini 4 Argon", 0, -3)] }),
+    [[{ label: "Gemini Models · Weekly Limit Remaining", pct: 27 }], [{ label: "Gemini 4 Argon", pct: 0 }]]
+  );
+  assert.deepEqual(detailLines({ id: "codex", windows: [] }), []);
+  assert.deepEqual(detailLines({ id: "codex" }), []);
 });
 
 test("shortGroup extracts group name before separator and strips Models suffix", () => {

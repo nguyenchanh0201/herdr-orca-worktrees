@@ -53,7 +53,16 @@ test("ESM format.js copies match src/usage/format.js on all Task 1 cases", async
     [{ status: "error", windows: [] }, now],
   ];
 
-  const barColors = [79, 80, 90];
+  const barColors = [59, 60, 79, 80];
+
+  const wf = (label, minutes, usedPercent) => ({ label, minutes, usedPercent, resetsAt: null });
+  const shortArgs = [wf("Session", 300, 1), wf("Weekly", 10080, 1), wf("Fable", 10080, 1), wf("Pro", 0, 1)];
+  const detailArgs = [
+    { id: "claude", windows: [wf("5h", 300, 85.4), wf("Weekly", 10080, 64), wf("Fable", 10080, 120)] },
+    { id: "agy", windows: [wf("Gemini Models · Weekly Limit Remaining", 10080, 27), wf("Gemini 4 Argon", 0, -3)] },
+    { id: "codex", windows: [] },
+    { id: "codex" },
+  ];
 
   const shortGroupArgs = [
     "Gemini 3.1 Pro Models · 5h",
@@ -151,6 +160,12 @@ test("ESM format.js copies match src/usage/format.js on all Task 1 cases", async
     }
     for (const args of updatedTextArgs) {
       assert.equal(mod.updatedText(...args), cjsFormat.updatedText(...args));
+    }
+    for (const w of shortArgs) {
+      assert.equal(mod.windowShort(w), cjsFormat.windowShort(w));
+    }
+    for (const p of detailArgs) {
+      assert.deepEqual(mod.detailLines(p), cjsFormat.detailLines(p));
     }
   }
 });

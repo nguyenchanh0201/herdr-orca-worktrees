@@ -74,9 +74,26 @@ function updatedText(fetchedAt, now = Date.now()) {
 }
 
 function barColor(pct) {
-  if (pct >= 90) return "ansi1";
-  if (pct >= 80) return "ansi3";
+  if (pct >= 80) return "ansi1";
+  if (pct >= 60) return "ansi3";
   return "muted";
 }
 
-module.exports = { until, headline, barColor, shortGroup, chipText, windowName, updatedText };
+function windowShort(w) {
+  if (w.label === "Fable") return "Fable";
+  if (w.minutes === 300) return "5h";
+  if (w.minutes === 10080) return "wk";
+  return w.label;
+}
+
+// Antigravity labels are long, so each window gets its own line.
+function detailLines(p) {
+  const items = (p.windows ?? []).map((w) => ({
+    label: p.id === "agy" ? w.label : windowShort(w),
+    pct: Math.max(0, Math.min(100, Math.round(w.usedPercent))),
+  }));
+  if (items.length === 0) return [];
+  return p.id === "agy" ? items.map((i) => [i]) : [items];
+}
+
+module.exports = { until, headline, barColor, shortGroup, chipText, windowName, updatedText, windowShort, detailLines };
