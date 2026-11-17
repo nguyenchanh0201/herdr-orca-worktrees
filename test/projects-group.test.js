@@ -641,3 +641,22 @@ test("label handles no-space sleeping rows using branch or folder basename", () 
     "feat/open"
   );
 });
+
+test("topStatus picks the most urgent status", () => {
+  assert.equal(g.topStatus([{ status: "done" }, { status: "blocked" }, { status: "working" }]), "blocked");
+  assert.equal(g.topStatus([{ status: "idle" }, { status: "working" }]), "working");
+  assert.equal(g.topStatus([{ status: "idle" }, { status: "done" }]), "done");
+  assert.equal(g.topStatus([{ status: "weird" }, {}]), null);
+  assert.equal(g.topStatus([]), null);
+});
+
+test("agentSummary caps icons at 5", () => {
+  const a = [1, 2, 3, 4, 5, 6, 7];
+  assert.deepEqual(g.agentSummary(a), { icons: [1, 2, 3, 4, 5], more: 2 });
+  assert.deepEqual(g.agentSummary([1, 2]), { icons: [1, 2], more: 0 });
+  assert.deepEqual(g.agentSummary([1, 2, 3], 2), { icons: [1, 2], more: 1 });
+});
+
+test("STATUS_GLYPH", () => {
+  assert.deepEqual({ ...g.STATUS_GLYPH }, { blocked: "!", working: "●", done: "✓", idle: "○" });
+});

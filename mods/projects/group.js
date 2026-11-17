@@ -322,3 +322,30 @@ export function hideMainRows(groups = []) {
     rows: Array.isArray(g.rows) ? g.rows.filter((r) => !r.main) : [],
   }));
 }
+
+export const STATUS_GLYPH = { blocked: "!", working: "●", done: "✓", idle: "○" };
+
+const URGENCY_ORDER = ["blocked", "working", "done", "idle"];
+
+/** Return the most urgent known agent status, or `null` when none are known. */
+export function topStatus(agents = []) {
+  if (!Array.isArray(agents) || agents.length === 0) return null;
+  let bestIdx = URGENCY_ORDER.length;
+  for (const a of agents) {
+    const idx = URGENCY_ORDER.indexOf(a?.status);
+    if (idx !== -1 && idx < bestIdx) {
+      bestIdx = idx;
+      if (bestIdx === 0) break;
+    }
+  }
+  return bestIdx < URGENCY_ORDER.length ? URGENCY_ORDER[bestIdx] : null;
+}
+
+/** Cap agent icons for the folded card strip and report the overflow count. */
+export function agentSummary(agents = [], max = 5) {
+  const list = Array.isArray(agents) ? agents : [];
+  return {
+    icons: list.slice(0, max),
+    more: Math.max(0, list.length - max),
+  };
+}
