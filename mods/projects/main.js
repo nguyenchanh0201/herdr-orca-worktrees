@@ -2,7 +2,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared, pickFolder, notify, home, appHome, readTextFile, knownAgents } from "herdr";
 import { placeOf, group, visibleRows, label, letterOf, colorIndex, agentsBySpace, sinceUpdate, elapsed, activitySort, attentionCount, sortGroups, hideMainRows, topStatus, agentSummary, STATUS_GLYPH } from "./group.js";
-import { QUIT, agentKind, parseResume, fallbackResume, keptFlags, fullAccessFlags, withFlags, resumeArgv, stripAnsi, isShellArgv, agentExited } from "./sleep.js";
+import { QUIT, agentKind, parseResume, fallbackResume, keptFlags, fullAccessFlags, atPrompt, withFlags, resumeArgv, stripAnsi, isShellArgv, agentExited } from "./sleep.js";
 
 // Agents our tools start get full access: the flag goes right after the program word.
 function fullAccessArgv(run) {
@@ -273,7 +273,7 @@ export default class Projects extends View {
           await Promise.all(
             [...pending].map(async (t) => {
               const info = await hcGet(t);
-              if (!info || info.status === "idle") pending.delete(t);
+              if (!info || atPrompt(info.status?.state)) pending.delete(t);
             })
           );
         }
@@ -304,9 +304,13 @@ export default class Projects extends View {
             codexSessionId = cs?.id ?? null;
           }
 
+          if (!atPrompt(before?.status?.state)) {
+            return { ok: false, name, reason: "is still busy — try again when it stops" };
+          }
+          // No --if: hc refuses "done" (finished, unseen) for --if idle, and plain send already waits on a typed draft.
           let sendOk = false;
           try {
-            const sr = await exec("hc", ["send", "--if", "idle", t, QUIT[kind]], { timeout: 5000 });
+            const sr = await exec("hc", ["send", t, QUIT[kind]], { timeout: 5000 });
             sendOk = sr.code === 0;
           } catch {
             sendOk = false;

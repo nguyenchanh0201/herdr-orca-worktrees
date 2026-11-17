@@ -477,3 +477,9 @@ assertBoth("fullAccessFlags returns the missing full-access flag per agent", (mo
   assert.equal(cmd, "codex --no-daemon --dangerously-bypass-approvals-and-sandbox resume abc");
   return cmd;
 });
+
+assertBoth("atPrompt accepts idle and done hc states only", (mod) => {
+  const r = ["idle", "done", "working", "blocked", undefined, null].map((s) => mod.atPrompt(s));
+  assert.deepEqual(r, [true, true, false, false, false, false]);
+  return r;
+});

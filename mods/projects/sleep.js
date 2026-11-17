@@ -117,6 +117,11 @@ export function fullAccessFlags(kind, existing) {
   return (FULL_ACCESS[kind] ?? []).filter((f) => !have.includes(f));
 }
 
+/** hc reports a finished-but-unseen turn as "done"; it waits at the prompt just like "idle". */
+export function atPrompt(state) {
+  return state === "idle" || state === "done";
+}
+
 /** Insert kept flags right after the program word (unless dsh or env-prefixed). */
 export function withFlags(kind, command, flags) {
   if (!command || !Array.isArray(flags) || flags.length === 0 || kind === "dsh") {
