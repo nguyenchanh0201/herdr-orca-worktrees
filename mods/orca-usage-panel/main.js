@@ -171,8 +171,9 @@ export default class OrcaUsagePanel extends View {
                 .cursor_pointer()
                 .when(isSelected, (el) => el.bg(t.selected))
                 .when(!isSelected, (el) => el.hover((s) => s.bg(t.selected)))
-                .on_mouse_move((_e, cx) => {
-                  if (this.selected !== p.id) {
+                // on_hover fires once on entry; on_mouse_move fired on every move and redrew the window each time.
+                .on_hover((hovered, cx) => {
+                  if (hovered && this.selected !== p.id) {
                     this.selected = p.id;
                     cx.notify();
                   }
