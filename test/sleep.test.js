@@ -1,8 +1,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
+const { makeRepo } = require("./helpers/repo");
+
+const CLI = path.resolve(__dirname, "../bin/orca-wt.js");
 
 const FIXTURES_DIR = path.join(__dirname, "fixtures", "sleep");
 
@@ -216,4 +221,202 @@ assertBoth("isValidResume accepts patterns and fallbacks, rejects invalid", (mod
     assert.equal(actual, expected, `${kind}: ${cmd}`);
     return actual;
   });
+});
+
+function makeRecord(overrides = {}) {
+  return {
+    version: 1,
+    sleptAt: 1794890000000,
+    branch: "b1",
+    agents: [
+      {
+        terminal: "t1",
+        tab: "tb1",
+        name: "Codex",
+        kind: "codex",
+        cwd: "/tmp/wt",
+        resume: "codex resume 019a7c2b-4d8e-7f10-8a3c-9e1b2c3d4e5f",
+        flags: ["--no-daemon"],
+        command: "codex --no-daemon resume 019a7c2b-4d8e-7f10-8a3c-9e1b2c3d4e5f",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function runCli(args) {
+  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8" });
+  assert.equal(r.status, 0, `CLI failed: ${r.stderr}`);
+  return JSON.parse(r.stdout);
+}
+
+test("saveSleep, getSleep, clearSleep on linked worktree and main checkout", (t) => {
+  const sleep = require("../src/sleep");
+  const repo = makeRepo();
+  t.after(() => repo.cleanup());
+
+  const wtGitDir = spawnSync("git", ["-C", repo.worktree, "rev-parse", "--path-format=absolute", "--git-dir"], {
+    encoding: "utf8",
+  }).stdout.trim();
+  const wtSleepFile = path.join(fs.realpathSync(wtGitDir), "orca-sleep.json");
+
+  const rec1 = makeRecord({ branch: "b1" });
+  const save1 = sleep.saveSleep(repo.worktree, rec1);
+  assert.ok(!save1.error, save1.error);
+  assert.equal(fs.existsSync(wtSleepFile), true);
+  assert.deepEqual(sleep.getSleep(repo.worktree), rec1);
+
+  sleep.clearSleep(repo.worktree);
+  assert.equal(fs.existsSync(wtSleepFile), false);
+  assert.equal(sleep.getSleep(repo.worktree), null);
+
+  // Main checkout stores in .git/orca-sleep.json
+  const mainSleepFile = path.join(repo.primary, ".git", "orca-sleep.json");
+  const rec2 = makeRecord({ branch: "main" });
+  const save2 = sleep.saveSleep(repo.primary, rec2);
+  assert.ok(!save2.error, save2.error);
+  assert.equal(fs.existsSync(mainSleepFile), true);
+  assert.deepEqual(sleep.getSleep(repo.primary), rec2);
+});
+
+test("saveSleep rejects invalid resume and bad record shapes", (t) => {
+  const sleep = require("../src/sleep");
+  const repo = makeRepo();
+  t.after(() => repo.cleanup());
+
+  const badCases = [
+    null,
+    {},
+    makeRecord({ version: 2 }),
+    makeRecord({ sleptAt: "now" }),
+    makeRecord({ agents: [] }),
+    makeRecord({
+      agents: [
+        {
+          terminal: "t1",
+          tab: "tb1",
+          name: "Codex",
+          kind: "codex",
+          cwd: "/tmp/wt",
+          resume: "codex resume 123",
+          flags: [],
+          command: "codex resume 123",
+        },
+      ],
+    }),
+    makeRecord({
+      agents: [
+        {
+          terminal: "t1",
+          tab: "tb1",
+          name: "Claude",
+          kind: "claude",
+          cwd: "/tmp/wt",
+          resume: "claude --continue",
+          flags: [],
+          command: "claude --continue",
+        },
+      ],
+    }),
+  ];
+
+  for (const bad of badCases) {
+    const res = sleep.saveSleep(repo.worktree, bad);
+    assert.ok(res && res.error, `expected error for ${JSON.stringify(bad)}`);
+  }
+
+  assert.equal(sleep.getSleep(repo.worktree), null);
+});
+
+test("listSleep returns sleeping worktrees with repo and skips non-sleeping worktrees", (t) => {
+  const sleep = require("../src/sleep");
+  const repo = makeRepo();
+  t.after(() => repo.cleanup());
+
+  // Add a third worktree that will NOT have a sleep record
+  const wt2Raw = path.join(path.dirname(repo.primary), "wt-awake");
+  const add = spawnSync("git", ["-C", repo.primary, "worktree", "add", "-b", "b2", wt2Raw], { encoding: "utf8" });
+  assert.equal(add.status, 0, add.stderr);
+
+  const recMain = makeRecord({ branch: "main", sleptAt: 1000 });
+  const recWt = makeRecord({ branch: "b1", sleptAt: 2000 });
+  assert.ok(!sleep.saveSleep(repo.primary, recMain).error);
+  assert.ok(!sleep.saveSleep(repo.worktree, recWt).error);
+
+  const listed = sleep.listSleep([repo.primary, "/nonexistent/repo/path"]);
+  assert.deepEqual(Object.keys(listed).sort(), [repo.primary, repo.worktree].sort());
+  assert.deepEqual(listed[repo.primary], { ...recMain, repo: repo.primary });
+  assert.deepEqual(listed[repo.worktree], { ...recWt, repo: repo.primary });
+
+  // CLI sleep list matches
+  const cliListed = runCli(["sleep", "list", repo.primary]);
+  assert.deepEqual(cliListed, listed);
+});
+
+test("codexSession finds newest matching rollout file after sinceMs", (t) => {
+  const sleep = require("../src/sleep");
+  const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "orca-codex-sess-")));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const targetCwd = "/tmp/my-worktree";
+  const sinceMs = Date.parse("2026-11-17T10:00:00.000Z");
+
+  const subDir = path.join(tmpDir, "2026", "11", "17");
+  fs.mkdirSync(subDir, { recursive: true });
+
+  // 1. Other cwd (after sinceMs)
+  fs.writeFileSync(
+    path.join(subDir, "rollout-2026-11-17T10-05-00-other.jsonl"),
+    JSON.stringify({
+      type: "session_meta",
+      payload: { id: "019a0000-0000-7000-8000-000000000001", timestamp: "2026-11-17T10:05:00.000Z", cwd: "/tmp/other" },
+    }) + "\n"
+  );
+
+  // 2. Same cwd, before sinceMs
+  fs.writeFileSync(
+    path.join(subDir, "rollout-2026-11-17T09-55-00-old.jsonl"),
+    JSON.stringify({
+      type: "session_meta",
+      payload: { id: "019a0000-0000-7000-8000-000000000002", timestamp: "2026-11-17T09:55:00.000Z", cwd: targetCwd },
+    }) + "\n"
+  );
+
+  // 3. Same cwd, after sinceMs
+  fs.writeFileSync(
+    path.join(subDir, "rollout-2026-11-17T10-02-00-match.jsonl"),
+    JSON.stringify({
+      type: "session_meta",
+      payload: { id: "019a0000-0000-7000-8000-000000000003", timestamp: "2026-11-17T10:02:00.000Z", cwd: targetCwd },
+    }) + "\n" + "{\"type\":\"other\"}\n"
+  );
+
+  assert.deepEqual(sleep.codexSession(targetCwd, sinceMs, tmpDir), {
+    id: "019a0000-0000-7000-8000-000000000003",
+  });
+
+  // None matching
+  assert.deepEqual(sleep.codexSession("/tmp/no-match", sinceMs, tmpDir), { id: null });
+  // Missing sessions dir
+  assert.deepEqual(sleep.codexSession(targetCwd, sinceMs, path.join(tmpDir, "missing")), { id: null });
+});
+
+test("CLI sleep save, get, clear and codex-session", (t) => {
+  const repo = makeRepo();
+  t.after(() => repo.cleanup());
+
+  assert.deepEqual(runCli(["sleep", "get", repo.worktree]), { sleeping: false });
+
+  const rec = makeRecord();
+  const saved = runCli(["sleep", "save", repo.worktree, JSON.stringify(rec)]);
+  assert.ok(!saved.error, saved.error);
+
+  assert.deepEqual(runCli(["sleep", "get", repo.worktree]), rec);
+
+  const cleared = runCli(["sleep", "clear", repo.worktree]);
+  assert.ok(!cleared.error, cleared.error);
+  assert.deepEqual(runCli(["sleep", "get", repo.worktree]), { sleeping: false });
+
+  const cs = runCli(["codex-session", "/tmp/nonexistent-cwd-for-orca-test", String(Date.now())]);
+  assert.deepEqual(cs, { id: null });
 });

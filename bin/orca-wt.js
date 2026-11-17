@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const commands = require("../src/commands");
 const projects = require("../src/projects");
+const sleep = require("../src/sleep");
 const { fetchAll } = require("../src/usage");
 const worktree = require("../src/worktree");
 
@@ -63,6 +64,32 @@ function handleProjects(args) {
   }
 }
 
+function handleSleep(args) {
+  const [sub, ...rest] = args;
+  const positional = rest.filter((a) => !a.startsWith("--"));
+
+  switch (sub) {
+    case "save": {
+      const [wt, jsonStr] = positional;
+      let record;
+      try {
+        record = JSON.parse(jsonStr);
+      } catch (err) {
+        return { error: err && err.message ? err.message : "Invalid JSON" };
+      }
+      return sleep.saveSleep(wt, record);
+    }
+    case "get":
+      return sleep.getSleep(positional[0]) ?? { sleeping: false };
+    case "clear":
+      return sleep.clearSleep(positional[0]);
+    case "list":
+      return sleep.listSleep(positional);
+    default:
+      return { error: sub ? `unknown sleep subcommand: ${sub}` : "missing sleep subcommand" };
+  }
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const force = rest.includes("--force");
@@ -88,6 +115,12 @@ async function main() {
       break;
     case "projects":
       result = handleProjects(rest);
+      break;
+    case "sleep":
+      result = handleSleep(rest);
+      break;
+    case "codex-session":
+      result = sleep.codexSession(positional[0], Number(positional[1]));
       break;
     case "clone":
       result = projects.cloneProject(positional[0], positional[1], positional[2]);
