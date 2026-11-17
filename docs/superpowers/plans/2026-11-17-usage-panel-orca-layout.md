@@ -39,7 +39,7 @@
 **Interfaces:**
 - Produces:
   - `barColor(pct: number): "ansi1" | "ansi3" | "muted"`
-  - `windowShort(w: {label, minutes}): string`: `"5h"` when `minutes === 300`, `"wk"` when `minutes === 10080`, otherwise `w.label`.
+  - `windowShort(w: {label, minutes}): string`: `"Fable"` when `label === "Fable"` (Fable is weekly; the label wins, as in `windowName`), otherwise `"5h"` when `minutes === 300`, `"wk"` when `minutes === 10080`, otherwise `w.label`.
   - `detailLines(p: {id, windows}): Array<Array<{ label: string, pct: number }>>`. `pct` is rounded and clamped to 0–100. For `p.id === "agy"`, there is one line per window, labeled with the full `w.label`. For every other provider, there is one line holding every window, labeled with `windowShort(w)`. With no windows, it returns `[]`.
 
 - [ ] **Step 1: Write the failing tests** in `test/usage-format.test.js`:
