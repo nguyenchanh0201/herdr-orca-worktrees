@@ -305,4 +305,4 @@
 
 ---
 
-**Decision (filled in by Task 0):** _pending_
+**Decision (filled in by Task 0):** **Stacks** (per `herdr.d.ts:422` "Esc closes the top dialog or popup"; live click check deferred to Task 5 manual check)
