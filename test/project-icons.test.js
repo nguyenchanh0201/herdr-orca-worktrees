@@ -74,6 +74,22 @@ test("sniffImage", () => {
   assert.equal(sniffImage(Buffer.alloc(0)), null);
 });
 
+test("sniffImage rejects high-bit-mutated WebP magic", () => {
+  for (const hex of [
+    "d2c9c6c60000000057454250",
+    "5249464600000000d7c5c2d0",
+    "d2c9c6c600000000d7c5c2d0",
+  ]) assert.equal(sniffImage(Buffer.from(hex, "hex")), null, hex);
+});
+
+test("listProjects falls back for high-bit-mutated WebP magic without rewriting data", () => {
+  fs.writeFileSync(path.join(process.env.HERDR_APP_HOME, "corrupt.webp"), Buffer.from("d2c9c6c600000000d7c5c2d0", "hex"));
+  const entries = [{ path: project, icon: { source: "custom", file: "corrupt.webp" } }];
+  save(entries);
+  assert.deepEqual(listProjects().projects, [{ path: project, exists: true, name: null, icon: null, iconSource: "custom" }]);
+  assert.deepEqual(stored(), entries);
+});
+
 test("REPO_ICON_CANDIDATES order", () => {
   assert.deepEqual(REPO_ICON_CANDIDATES, [
     "favicon.png", "favicon.webp", "public/favicon.png", "public/favicon.webp",
