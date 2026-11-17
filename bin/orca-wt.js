@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const commands = require("../src/commands");
+const apps = require("../src/apps");
 const projects = require("../src/projects");
 const sleep = require("../src/sleep");
 const { fetchAll } = require("../src/usage");
@@ -55,6 +56,8 @@ function handleProjects(args) {
       return projects.listProjects();
     case "rename":
       return projects.renameProject(rest[0], rest.slice(1).join(" "));
+    case "set-group":
+      return projects.setGroup(rest[0], rest.slice(1).join(" "));
     case "resolve-icons":
       return projects.resolveIcons();
     case "set-icon":
@@ -69,6 +72,20 @@ function handleProjects(args) {
       return projects.seedProjects(positional);
     default:
       return { error: sub ? `unknown projects subcommand: ${sub}` : "missing projects subcommand" };
+  }
+}
+
+function handleApps(args) {
+  const [sub, ...rest] = args;
+  const positional = rest.filter((a) => !a.startsWith("--"));
+
+  switch (sub) {
+    case "list":
+      return apps.listApps();
+    case "set":
+      return apps.setApps(positional);
+    default:
+      return { error: sub ? `unknown apps subcommand: ${sub}` : "missing apps subcommand" };
   }
 }
 
@@ -123,6 +140,12 @@ async function main() {
       break;
     case "projects":
       result = await handleProjects(rest);
+      break;
+    case "apps":
+      result = handleApps(rest);
+      break;
+    case "open":
+      result = apps.openIn(positional[0], positional[1]);
       break;
     case "sleep":
       result = handleSleep(rest);

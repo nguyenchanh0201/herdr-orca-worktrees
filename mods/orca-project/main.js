@@ -1,6 +1,6 @@
-import { View, div } from "gpui-kit";
+import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
-import { theme, openOverlay, closeOverlay, props, shared, setShared, checking, pickFolder, home, exec } from "herdr";
+import { theme, openOverlay, closeOverlay, props, shared, setShared, checking, pickFolder, home, exec, notify } from "herdr";
 import config from "./config.js";
 
 function defaultCloneName(url) {
@@ -19,9 +19,19 @@ export default class OrcaProject extends View {
     const p = props();
     this.mode = p.mode ?? "add";
     this.closed = false;
+    this.backMode = null;
+    this.openInFolder = p.folder ?? null;
     this.handle.focus();
 
-    if (this.mode === "space") {
+    if (this.mode === "open-in" || this.mode === "apps") {
+      this.loadApps(cx);
+    } else if (this.mode === "new-group") {
+      this.localError = "";
+      this.groupInput = InputState.new({ value: p.name ? `${p.name} group` : "" });
+      this.groupInput.on("change", (_e, cx) => { this.localError = ""; cx.notify(); });
+      this.groupInput.on("submit", (_e, cx) => this.submitNewGroup(cx));
+      this.groupInput.focus();
+    } else if (this.mode === "space") {
       this.sleepReqId = null;
       this.busyAgents = null;
       this.sleepError = null;
@@ -142,6 +152,20 @@ export default class OrcaProject extends View {
     }
   }
 
+  loadApps(cx) {
+    this.appsInstalled = [];
+    this.appsChosen = new Set();
+    cx.spawn(async (cx) => {
+      try {
+        const res = await exec(config.node, [config.cli, "apps", "list"]);
+        const parsed = JSON.parse(res.stdout || "{}");
+        if (Array.isArray(parsed.installed)) this.appsInstalled = parsed.installed;
+        if (Array.isArray(parsed.chosen)) this.appsChosen = new Set(parsed.chosen);
+      } catch {}
+      cx.notify();
+    });
+  }
+
   close() {
     if (this.closed) return;
     this.closed = true;
@@ -204,6 +228,36 @@ export default class OrcaProject extends View {
       .child(div().flex_1().child(label));
   }
 
+  subRow(id, label, onOpen, t) {
+    return h_flex()
+      .id(id)
+      .h(31)
+      .px(9)
+      .rounded(7)
+      .items_center()
+      .flex_none()
+      .cursor_pointer()
+      .text_color(t.foreground)
+      .hover((s) => s.bg(t.selected))
+      .on_click((_e, cx) => onOpen(cx))
+      .child(div().flex_1().child(label))
+      .child(div().flex_none().text_color(t.dim).child("›"));
+  }
+
+  openOpenIn(folder, cx) {
+    this.backMode = this.mode;
+    this.openInFolder = folder;
+    this.mode = "open-in";
+    this.loadApps(cx);
+    cx.notify();
+  }
+
+  openGroupMenu(cx) {
+    this.backMode = this.mode;
+    this.mode = "group";
+    cx.notify();
+  }
+
   renderAdd(t) {
     return v_flex()
       .id("orca-project-add")
@@ -257,6 +311,11 @@ export default class OrcaProject extends View {
       .on_key_down((e) => {
         if (e.key === "escape") this.close();
       })
+      .when(Boolean(p.path), (el) =>
+        el
+          .child(this.subRow("open-in", "Open in", (cx) => this.openOpenIn(p.path, cx), t))
+          .child(this.subRow("project-group", "Project Group", (cx) => this.openGroupMenu(cx), t))
+      )
       .when(Boolean(p.saved), (el) =>
         el.child(
           this.popupRow("rename-project", "Rename…", () => {
@@ -660,6 +719,9 @@ export default class OrcaProject extends View {
     }
 
     return wrap
+      .when(Boolean(p.folder || p.worktree), (el) =>
+        el.child(this.subRow("open-in", "Open in", (cx) => this.openOpenIn(p.folder || p.worktree, cx), t))
+      )
       .when(Boolean(p.hasAgents && !p.sleeping && p.space), (el) =>
         el.child(
           this.popupRow(
@@ -726,6 +788,422 @@ export default class OrcaProject extends View {
       );
   }
 
+  appIconEl(app, t) {
+    return app?.icon
+      ? image(app.icon).size(14).rounded(3).flex_none()
+      : svg("icons/folder.svg").size(14).flex_none().text_color(t.muted);
+  }
+
+  renderOpenIn(t) {
+    const p = props();
+    const folder = this.openInFolder ?? p.folder;
+    const chosenApps = this.appsInstalled.filter((a) => this.appsChosen.has(a.id));
+    const wrap = v_flex()
+      .id("orca-project-open-in")
+      .w_full()
+      .bg(t.popover)
+      .p(5)
+      .text_size(12.8)
+      .track_focus(this.handle)
+      .on_key_down((e) => {
+        if (e.key === "escape") {
+          this.close();
+          if (p.parent) closeOverlay(p.parent);
+        }
+      });
+
+    if (this.backMode) {
+      wrap
+        .child(
+          this.popupRow(
+            "open-in-back",
+            "‹ Back",
+            (_e, cx) => {
+              this.mode = this.backMode;
+              this.backMode = null;
+              cx.notify();
+            },
+            t
+          )
+        )
+        .child(div().h(1).my(4).bg(t.border));
+    }
+
+    for (const app of chosenApps) {
+      wrap.child(
+        h_flex()
+          .id(`open-in-${app.id}`)
+          .h(31)
+          .px(9)
+          .gap(8)
+          .rounded(7)
+          .items_center()
+          .flex_none()
+          .cursor_pointer()
+          .text_color(t.foreground)
+          .hover((s) => s.bg(t.selected))
+          .on_click(async () => {
+            try {
+              const res = await exec(config.node, [config.cli, "open", app.id, folder]);
+              const parsed = JSON.parse(res.stdout || "{}");
+              if (parsed?.error) {
+                notify({ title: "Open in", body: parsed.error, level: "error" });
+              }
+            } catch (err) {
+              notify({ title: "Open in", body: err?.message ?? String(err), level: "error" });
+            }
+            this.close();
+            if (p.parent) closeOverlay(p.parent);
+          })
+          .child(this.appIconEl(app, t))
+          .child(div().flex_1().truncate().child(app.name))
+      );
+    }
+
+    return wrap
+      .child(div().h(1).my(4).bg(t.border))
+      .child(
+        this.popupRow(
+          "customize-apps",
+          "Customize apps…",
+          () => {
+            this.close();
+            if (p.parent) closeOverlay(p.parent);
+            openOverlay({
+              mod: "orca-project",
+              kind: "dialog",
+              width: 320,
+              height: 360,
+              props: { mode: "apps" },
+            });
+          },
+          t
+        )
+      );
+  }
+
+  renderApps(t) {
+    const checkRow = (id, app, checked, onClick) =>
+      h_flex()
+        .id(id)
+        .h(30)
+        .px(9)
+        .gap(8)
+        .rounded(7)
+        .items_center()
+        .cursor_pointer()
+        .hover((s) => s.bg(t.selected))
+        .on_click(onClick)
+        .child(div().w(14).flex_none().text_color(checked ? t.foreground : t.dim).child(checked ? "✓" : ""))
+        .child(this.appIconEl(app, t))
+        .child(div().flex_1().text_color(t.foreground).child(app.name));
+
+    const wrap = v_flex()
+      .id("orca-project-apps")
+      .w_full()
+      .bg(t.popover)
+      .p(14)
+      .gap(8)
+      .text_size(12.8)
+      .track_focus(this.handle)
+      .on_key_down((e) => {
+        if (e.key === "escape") this.close();
+      })
+      .child(div().font_semibold().text_size(14).text_color(t.foreground).child("Customize apps"));
+
+    for (const app of this.appsInstalled) {
+      const checked = this.appsChosen.has(app.id);
+      wrap.child(
+        checkRow(`app-${app.id}`, app, checked, (_e, cx) => {
+          if (this.appsChosen.has(app.id)) this.appsChosen.delete(app.id);
+          else this.appsChosen.add(app.id);
+          cx.notify();
+        })
+      );
+    }
+
+    return wrap.child(
+      h_flex()
+        .justify_end()
+        .gap(6)
+        .pt(6)
+        .child(
+          div()
+            .id("apps-cancel")
+            .h(28)
+            .px(10)
+            .flex()
+            .items_center()
+            .rounded(6)
+            .border(1)
+            .border_color(t.input)
+            .text_color(t.muted)
+            .cursor_pointer()
+            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+            .on_click(() => this.close())
+            .child("Cancel")
+        )
+        .child(
+          div()
+            .id("apps-save")
+            .h(28)
+            .px(10)
+            .flex()
+            .items_center()
+            .rounded(6)
+            .bg(t.accent)
+            .text_color(t.background)
+            .font_semibold()
+            .cursor_pointer()
+            .on_click(async () => {
+              const ids = this.appsInstalled.filter((a) => this.appsChosen.has(a.id)).map((a) => a.id);
+              try {
+                const res = await exec(config.node, [config.cli, "apps", "set", ...ids]);
+                const parsed = JSON.parse(res.stdout || "{}");
+                if (parsed?.error) {
+                  notify({ title: "Customize apps", body: parsed.error, level: "error" });
+                  return;
+                }
+              } catch (err) {
+                notify({ title: "Customize apps", body: err?.message ?? String(err), level: "error" });
+                return;
+              }
+              this.close();
+            })
+            .child("Save")
+        )
+    );
+  }
+
+  renderGroup(t) {
+    const p = props();
+    const wrap = v_flex()
+      .id("orca-project-group")
+      .w_full()
+      .bg(t.popover)
+      .p(5)
+      .text_size(12.8)
+      .track_focus(this.handle)
+      .on_key_down((e) => {
+        if (e.key === "escape") {
+          this.close();
+          if (p.parent) closeOverlay(p.parent);
+        }
+      });
+
+    if (this.backMode) {
+      wrap
+        .child(
+          this.popupRow(
+            "group-back",
+            "‹ Back",
+            (_e, cx) => {
+              this.mode = this.backMode;
+              this.backMode = null;
+              cx.notify();
+            },
+            t
+          )
+        )
+        .child(div().h(1).my(4).bg(t.border));
+    }
+
+    wrap
+      .child(
+        this.popupRow(
+          "new-group-from-project",
+          "New group from project…",
+          () => {
+            this.close();
+            if (p.parent) closeOverlay(p.parent);
+            openOverlay({
+              mod: "orca-project",
+              kind: "dialog",
+              width: 420,
+              height: 228,
+              props: {
+                mode: "new-group",
+                path: p.path,
+                name: p.name,
+                groups: Array.isArray(p.groups) ? p.groups : [],
+              },
+            });
+          },
+          t
+        )
+      )
+      .when(Boolean(p.group), (el) =>
+        el.child(
+          this.popupRow(
+            "remove-from-group",
+            "Remove from group",
+            async () => {
+              try {
+                const res = await exec(config.node, [config.cli, "projects", "set-group", p.path]);
+                const parsed = JSON.parse(res.stdout || "{}");
+                if (parsed?.error) {
+                  notify({ title: "Project Group", body: parsed.error, level: "error" });
+                  return;
+                }
+              } catch (err) {
+                notify({ title: "Project Group", body: err?.message ?? String(err), level: "error" });
+                return;
+              }
+              setShared("orca.projects.rev", Date.now());
+              this.close();
+              if (p.parent) closeOverlay(p.parent);
+            },
+            t
+          )
+        )
+      );
+
+    const curLower = typeof p.group === "string" ? p.group.trim().toLowerCase() : "";
+    const others = (Array.isArray(p.groups) ? p.groups : []).filter(
+      (g) => typeof g === "string" && g.trim() && g.trim().toLowerCase() !== curLower
+    );
+    if (others.length > 0) {
+      wrap.child(div().px(9).pt(6).pb(2).text_size(11).text_color(t.dim).child("Move to group"));
+      for (const g of others) {
+        wrap.child(
+          h_flex()
+            .id(`move-group-${g}`)
+            .h(31)
+            .px(9)
+            .gap(6)
+            .rounded(7)
+            .items_center()
+            .flex_none()
+            .cursor_pointer()
+            .text_color(t.foreground)
+            .hover((s) => s.bg(t.selected))
+            .on_click(async () => {
+              try {
+                const res = await exec(config.node, [config.cli, "projects", "set-group", p.path, g]);
+                const parsed = JSON.parse(res.stdout || "{}");
+                if (parsed?.error) {
+                  notify({ title: "Project Group", body: parsed.error, level: "error" });
+                  return;
+                }
+              } catch (err) {
+                notify({ title: "Project Group", body: err?.message ?? String(err), level: "error" });
+                return;
+              }
+              setShared("orca.projects.rev", Date.now());
+              this.close();
+              if (p.parent) closeOverlay(p.parent);
+            })
+            .child(div().flex_none().text_size(10).text_color(t.muted).child("●"))
+            .child(div().flex_1().truncate().child(g))
+        );
+      }
+    }
+    return wrap;
+  }
+
+  async submitNewGroup(cx) {
+    const p = props();
+    const raw = this.groupInput.value().trim();
+    if (!raw) return;
+    const groups = Array.isArray(p.groups) ? p.groups : [];
+    if (groups.some((g) => typeof g === "string" && g.trim().toLowerCase() === raw.toLowerCase())) {
+      this.localError = "A group with that name already exists — use Move to group";
+      cx.notify();
+      return;
+    }
+    try {
+      const res = await exec(config.node, [config.cli, "projects", "set-group", p.path, raw]);
+      const parsed = JSON.parse(res.stdout || "{}");
+      if (parsed?.error) {
+        this.localError = parsed.error;
+        cx.notify();
+        return;
+      }
+    } catch (err) {
+      this.localError = err?.message ?? String(err);
+      cx.notify();
+      return;
+    }
+    setShared("orca.projects.rev", Date.now());
+    this.close();
+  }
+
+  renderNewGroup(t) {
+    const empty = !this.groupInput.value().trim();
+    return v_flex()
+      .id("orca-project-new-group")
+      .size_full()
+      .bg(t.popover)
+      .p(16)
+      .gap(10)
+      .text_size(13)
+      .track_focus(this.handle)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") {
+          cx.stop_propagation();
+          this.close();
+        }
+      })
+      .child(div().font_semibold().text_size(14).text_color(t.foreground).child("New Project Group"))
+      .child(div().text_size(12).text_color(t.muted).child("Create a group and move this project into it."))
+      .child(
+        v_flex()
+          .gap(4)
+          .child(div().text_size(12).text_color(t.muted).child("Group Name"))
+          .child(
+            Input.new(this.groupInput)
+              .h(30)
+              .px(10)
+              .items_center()
+              .rounded(6)
+              .border(1)
+              .border_color(t.accent)
+              .bg(t.background)
+              .text_color(t.foreground)
+          )
+      )
+      .when(Boolean(this.localError), (el) =>
+        el.child(div().text_size(11.5).text_color(t.blocked).child(this.localError))
+      )
+      .child(div().flex_1())
+      .child(
+        h_flex()
+          .justify_end()
+          .gap(6)
+          .pt(4)
+          .child(
+            div()
+              .id("new-group-cancel")
+              .h(28)
+              .px(10)
+              .flex()
+              .items_center()
+              .rounded(6)
+              .border(1)
+              .border_color(t.input)
+              .text_color(t.muted)
+              .cursor_pointer()
+              .hover((s) => s.bg(t.hover).text_color(t.foreground))
+              .on_click(() => this.close())
+              .child("Cancel")
+          )
+          .child(
+            div()
+              .id("new-group-create")
+              .h(28)
+              .px(10)
+              .flex()
+              .items_center()
+              .rounded(6)
+              .bg(empty ? t.hover : t.accent)
+              .text_color(empty ? t.dim : t.background)
+              .font_semibold()
+              .when(!empty, (el) => el.cursor_pointer().on_click((_e, cx) => this.submitNewGroup(cx)))
+              .child("Create")
+          )
+      );
+  }
+
   render() {
     if (!props()?.overlay) return div();
     const t = theme();
@@ -735,6 +1213,10 @@ export default class OrcaProject extends View {
     if (this.mode === "header") return this.renderHeader(t);
     if (this.mode === "options") return this.renderOptions(t);
     if (this.mode === "space") return this.renderSpace(t);
+    if (this.mode === "open-in") return this.renderOpenIn(t);
+    if (this.mode === "apps") return this.renderApps(t);
+    if (this.mode === "group") return this.renderGroup(t);
+    if (this.mode === "new-group") return this.renderNewGroup(t);
     return this.renderAdd(t);
   }
 }

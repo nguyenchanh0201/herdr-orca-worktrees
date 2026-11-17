@@ -20,7 +20,7 @@ function element(kind, path) {
 }
 
 async function harness(respond = () => ({}), overlayProps = null) {
-  const state = { shared: new Map(), calls: [], runs: [], storageSets: [], scrolls: [], spaces: [], agents: [], checking: false, notices: 0, overlays: [], inputs: [] };
+  const state = { shared: new Map(), calls: [], runs: [], storageSets: [], scrolls: [], spaces: [], agents: [], checking: false, notices: 0, notifications: [], overlays: [], inputs: [] };
   const pending = [];
   const cx = { notify() { state.notices++; }, stop_propagation() {}, focus_handle: () => ({ focus() {} }), spawn(fn) { pending.push(Promise.resolve().then(() => fn(cx))); }, timer: { every() {} } };
   const context = {
@@ -35,7 +35,7 @@ async function harness(respond = () => ({}), overlayProps = null) {
     spaces: () => state.spaces, panes: () => [], agents: () => state.agents, machines: () => [{ name: null, layout: 'ready' }],
     checking: () => state.checking, layout: () => null, knownAgents: async () => [],
     run(cmd, args) { state.runs.push({ cmd, args }); }, openOverlay(spec) { state.overlays.push({ open: JSON.parse(JSON.stringify(spec)) }); }, closeOverlay(id) { state.overlays.push({ close: id }); },
-    props: () => overlayProps, notify() {}, setAgentOrder() {}, pickFolder: async () => '/new',
+    props: () => overlayProps, notify(n) { state.notifications.push(n); }, setAgentOrder() {}, pickFolder: async () => '/new',
     InputState: { new(options = {}) {
       const input = { options, text: options.value ?? '', handlers: {}, value() { return this.text; }, set_value(v) { this.text = v; }, on(event, fn) { this.handlers[event] = fn; }, focus() { this.focused = true; } };
       state.inputs.push(input);
@@ -204,7 +204,7 @@ test('header right-click opens expanded popup with the display name', async () =
   await h.flush();
   const tree = h.view.renderHeader({ kind: 'repo', key: 'r', primary: '/repo', saved: true, displayName: 'Admin Portal', rows: [] }, false, {});
   tree.attrs.on_mouse_down[1]({}, h.cx);
-  assert.deepEqual(h.state.overlays, [{ open: { mod: 'orca-project', kind: 'popup', width: 220, height: 150, props: { mode: 'header', path: '/repo', saved: true, name: 'Admin Portal' } } }]);
+  assert.deepEqual(h.state.overlays, [{ open: { mod: 'orca-project', kind: 'popup', width: 220, height: 240, props: { mode: 'header', path: '/repo', saved: true, name: 'Admin Portal', group: null, groups: [] } } }]);
 });
 
 // Catches actions on unsaved groups, missing/reordered rows, or incorrect dialog contracts.
@@ -212,13 +212,13 @@ test('saved header menu closes before opening rename/icon dialogs; unsaved only 
   for (const [label, mode, height, extra] of [['Rename…', 'rename', 160, { name: 'Admin Portal' }], ['Change icon…', 'icon', 260, {}]]) {
     const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin Portal' });
     const tree = h.view.render();
-    assert.deepEqual(texts(tree), ['Rename…', 'Change icon…', 'Remove from sidebar']);
+    assert.deepEqual(texts(tree), ['Open in', '›', 'Project Group', '›', 'Rename…', 'Change icon…', 'Remove from sidebar']);
     nodes(tree).find(n => n.attrs.on_click && texts(n).includes(label)).attrs.on_click({}, h.cx);
     assert.deepEqual(h.state.overlays, [{ close: 'menu' }, { open: { mod: 'orca-project', kind: 'dialog', width: 420, height, props: { mode, path: '/repo', ...extra } } }]);
   }
   const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: false, path: '/repo' });
-  assert.deepEqual(texts(h.view.render()), ['Not saved — it shows while its spaces are open']);
-  assert.equal(nodes(h.view.render()).filter(n => n.attrs.on_click).length, 0);
+  assert.deepEqual(texts(h.view.render()), ['Open in', '›', 'Project Group', '›', 'Not saved — it shows while its spaces are open']);
+  assert.equal(nodes(h.view.render()).filter(n => n.attrs.on_click).length, 2);
 });
 
 // Catches lost prefill/retention, missing submit binding, empty-name rejection, or absent refresh/close.
@@ -482,6 +482,272 @@ test('active card paints selected background once on card and not on inner title
   const title = nodes(tree).find((n) => n.attrs.id === 'space-s1');
   assert.equal(card?.attrs.bg, 'c-selected');
   assert.equal(title?.attrs.bg, undefined);
+});
+
+async function groupHarness() {
+  const h = await harness();
+  await h.flush();
+  h.state.spaces = [
+    { id: 's1', folder: '/r', machine: null, branch: 'main', named: false, name: 's1', active: true, tabs: [] },
+    { id: 's2', folder: '/wt/2', machine: null, branch: 'feat/2', named: false, name: 's2', active: false, tabs: [] },
+  ];
+  h.view.repo.set('/r', { primary: '/r', linked: false });
+  h.view.repo.set('/wt/2', { primary: '/r', linked: true });
+  h.view.saved = [{ path: '/r', name: 'Server', icon: null, exists: true, group: 'CTM group' }];
+  return h;
+}
+
+test('grouped projects render under a group header', async () => {
+  const h = await groupHarness();
+  const tree = h.view.render();
+  const t = texts(tree);
+  assert.ok(t.indexOf('CTM group') !== -1);
+  assert.ok(t.indexOf('CTM group') < t.indexOf('Server'));
+  assert.ok(nodes(tree).some((n) => n.attrs.id === 'group-head-group:ctm group'));
+});
+
+test('folding a group hides its projects but keeps the active card', async () => {
+  const h = await groupHarness();
+  let tree = h.view.render();
+  const head = nodes(tree).find((n) => n.attrs.id === 'group-head-group:ctm group');
+  assert.ok(head);
+  head.attrs.on_click({}, h.cx);
+  const lastSet = h.state.storageSets.findLast(([k]) => k === 'projects.collapsed');
+  assert.ok(lastSet && JSON.parse(lastSet[1]).includes('group:ctm group'));
+
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('Server'));
+  assert.ok(nodes(tree).some((n) => n.attrs.id === 'card-s1'));
+  assert.ok(!nodes(tree).some((n) => n.attrs.id === 'card-s2'));
+});
+
+test('folded group with no active space shows only its header', async () => {
+  const h = await groupHarness();
+  h.state.spaces[0].active = false;
+  h.view.collapsed.add('group:ctm group');
+  const tree = h.view.render();
+  assert.ok(texts(tree).includes('CTM group'));
+  assert.ok(!texts(tree).includes('Server'));
+  assert.ok(!nodes(tree).some((n) => n.attrs.id === 'card-s1'));
+});
+
+test('ungrouped projects render as before', async () => {
+  const h = await cardHarness();
+  const tree = h.view.render();
+  assert.ok(!nodes(tree).some((n) => typeof n.attrs.id === 'string' && n.attrs.id.startsWith('group-head-')));
+});
+
+test('header and space menus show Open in ›', async () => {
+  for (const props of [
+    { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin' },
+    { overlay: 'menu', mode: 'space', space: 's1', worktree: '/wt', folder: '/wt', sleeping: false, hasAgents: false },
+  ]) {
+    const h = await harness(undefined, props);
+    const t = texts(h.view.render());
+    assert.ok(t.includes('Open in'));
+    assert.ok(t.includes('›'));
+  }
+});
+
+test('open-in lists chosen apps then Customize apps…', async () => {
+  const h = await harness(
+    (args) => args[0] === 'apps' && args[1] === 'list'
+      ? { installed: [{ id: 'vscode', name: 'VS Code' }, { id: 'zed', name: 'Zed' }, { id: 'finder', name: 'Finder' }], chosen: ['zed', 'finder'] }
+      : {},
+    { overlay: 'sub', mode: 'open-in', folder: '/r', parent: 'menu' }
+  );
+  await h.flush();
+  const t = texts(h.view.render());
+  assert.deepEqual(t, ['Zed', 'Finder', 'Customize apps…']);
+  assert.ok(!t.includes('VS Code'));
+});
+
+test('clicking an app opens the folder and closes both popups', async () => {
+  const h = await harness(
+    (args) => args[0] === 'apps' && args[1] === 'list'
+      ? { installed: [{ id: 'zed', name: 'Zed' }, { id: 'finder', name: 'Finder' }], chosen: ['zed', 'finder'] }
+      : { ok: true },
+    { overlay: 'sub', mode: 'open-in', folder: '/r', parent: 'menu' }
+  );
+  await h.flush();
+  const tree = h.view.render();
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Zed')).attrs.on_click({}, h.cx);
+  await h.flush();
+  assert.deepEqual(Array.from(h.state.calls.at(-1).args), ['open', 'zed', '/r']);
+  assert.deepEqual(h.state.overlays, [{ close: 'sub' }, { close: 'menu' }]);
+});
+
+test('open failure notifies', async () => {
+  const h = await harness(
+    (args) => {
+      if (args[0] === 'apps' && args[1] === 'list') {
+        return { installed: [{ id: 'zed', name: 'Zed' }], chosen: ['zed'] };
+      }
+      if (args[0] === 'open') return { error: 'boom' };
+      return {};
+    },
+    { overlay: 'sub', mode: 'open-in', folder: '/r', parent: 'menu' }
+  );
+  await h.flush();
+  const tree = h.view.render();
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Zed')).attrs.on_click({}, h.cx);
+  await h.flush();
+  assert.equal(h.state.notifications.length, 1);
+  assert.equal(h.state.notifications[0].level, 'error');
+  assert.equal(h.state.notifications[0].body, 'boom');
+});
+
+test('Customize apps saves the checked ids', async () => {
+  const h = await harness(
+    (args) => args[0] === 'apps' && args[1] === 'list'
+      ? { installed: [{ id: 'zed', name: 'Zed' }, { id: 'finder', name: 'Finder' }], chosen: ['zed', 'finder'] }
+      : { ok: true },
+    { overlay: 'dlg', mode: 'apps' }
+  );
+  await h.flush();
+  let tree = h.view.render();
+  nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Zed')).attrs.on_click({}, h.cx);
+  tree = h.view.render();
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Save')).attrs.on_click({}, h.cx);
+  await h.flush();
+  assert.deepEqual(Array.from(h.state.calls.at(-1).args), ['apps', 'set', 'finder']);
+  assert.deepEqual(h.state.overlays, [{ close: 'dlg' }]);
+});
+
+test('header menu shows Project Group ›', async () => {
+  const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin' });
+  const t = texts(h.view.render());
+  assert.ok(t.includes('Project Group'));
+});
+
+test('group popup lists actions and other groups', async () => {
+  const h = await harness(undefined, {
+    overlay: 'sub',
+    mode: 'group',
+    path: '/r',
+    name: 'Admin',
+    group: 'CTM group',
+    groups: ['CTM group', 'Tools'],
+    parent: 'menu',
+  });
+  const t = texts(h.view.render());
+  assert.deepEqual(t, ['New group from project…', 'Remove from group', 'Move to group', '●', 'Tools']);
+  assert.ok(!t.includes('CTM group'));
+});
+
+test('group popup for an ungrouped project hides Remove', async () => {
+  const h = await harness(undefined, {
+    overlay: 'sub',
+    mode: 'group',
+    path: '/r',
+    name: 'Admin',
+    group: null,
+    groups: ['CTM group', 'Tools'],
+    parent: 'menu',
+  });
+  const t = texts(h.view.render());
+  assert.ok(!t.includes('Remove from group'));
+  assert.deepEqual(t, ['New group from project…', 'Move to group', '●', 'CTM group', '●', 'Tools']);
+});
+
+test('Move to group runs set-group and refreshes', async () => {
+  const h = await harness(undefined, {
+    overlay: 'sub',
+    mode: 'group',
+    path: '/r',
+    name: 'Admin',
+    group: 'CTM group',
+    groups: ['CTM group', 'Tools'],
+    parent: 'menu',
+  });
+  const tree = h.view.render();
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Tools')).attrs.on_click({}, h.cx);
+  assert.deepEqual(Array.from(h.state.calls.at(-1).args), ['projects', 'set-group', '/r', 'Tools']);
+  assert.equal(typeof h.state.shared.get('orca.projects.rev'), 'number');
+  assert.deepEqual(h.state.overlays, [{ close: 'sub' }, { close: 'menu' }]);
+});
+
+test('new group dialog prefills, rejects duplicates, creates', async () => {
+  const h = await harness(undefined, {
+    overlay: 'dlg',
+    mode: 'new-group',
+    path: '/r',
+    name: 'Coduct.CTM.UserApp',
+    groups: ['CTM group'],
+  });
+  let tree = h.view.render();
+  const input = nodes(tree).find((n) => n.kind === 'Input')?.path;
+  assert.equal(input?.value(), 'Coduct.CTM.UserApp group');
+
+  input.set_value('ctm GROUP');
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Create')).attrs.on_click({}, h.cx);
+  assert.equal(h.state.calls.length, 0);
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('A group with that name already exists — use Move to group'));
+
+  input.set_value('New one');
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Create')).attrs.on_click({}, h.cx);
+  assert.deepEqual(Array.from(h.state.calls.at(-1).args), ['projects', 'set-group', '/r', 'New one']);
+  assert.equal(typeof h.state.shared.get('orca.projects.rev'), 'number');
+  assert.deepEqual(h.state.overlays, [{ close: 'dlg' }]);
+});
+
+test('clicking subRow drills down in place with Back and preserves icons', async () => {
+  const h = await harness(
+    (args) => args[0] === 'apps' && args[1] === 'list'
+      ? { installed: [{ id: 'zed', name: 'Zed', icon: 'data/app-icons/zed.png' }], chosen: ['zed'] }
+      : {},
+    { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin' }
+  );
+  let tree = h.view.render();
+  nodes(tree).find((n) => n.attrs.id === 'open-in').attrs.on_click({}, h.cx);
+  await h.flush();
+  assert.equal(h.state.overlays.length, 0);
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('‹ Back'));
+  assert.ok(texts(tree).includes('Zed'));
+  assert.ok(nodes(tree).some((n) => n.kind === 'image' && n.path === 'data/app-icons/zed.png'));
+
+  nodes(tree).find((n) => n.attrs.id === 'open-in-back').attrs.on_click({}, h.cx);
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('Open in'));
+  assert.ok(texts(tree).includes('Project Group'));
+});
+
+test('group popup notifies on set-group error without refreshing', async () => {
+  const h = await harness(
+    () => ({ error: 'Not a git repository' }),
+    { overlay: 'sub', mode: 'group', path: '/r', name: 'Admin', group: 'CTM group', groups: ['CTM group', 'Tools'], parent: 'menu' }
+  );
+  const tree = h.view.render();
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Tools')).attrs.on_click({}, h.cx);
+  assert.equal(h.state.notifications.length, 1);
+  assert.equal(h.state.notifications[0].level, 'error');
+  assert.equal(h.state.notifications[0].body, 'Not a git repository');
+  assert.equal(h.state.shared.has('orca.projects.rev'), false);
+});
+
+test('clicking Project Group drills down in place with Back', async () => {
+  const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin', group: 'CTM', groups: ['CTM', 'Tools'] });
+  let tree = h.view.render();
+  nodes(tree).find((n) => n.attrs.id === 'project-group').attrs.on_click({}, h.cx);
+  assert.equal(h.state.overlays.length, 0);
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('‹ Back'));
+  assert.ok(texts(tree).includes('New group from project…'));
+  assert.ok(texts(tree).includes('Tools'));
+
+  nodes(tree).find((n) => n.attrs.id === 'group-back').attrs.on_click({}, h.cx);
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('Project Group'));
+});
+
+test('new-group Input is styled and dialog height fits inline error', async () => {
+  const h = await harness(undefined, { overlay: 'dlg', mode: 'new-group', path: '/r', name: 'App', groups: ['App group'] });
+  const tree = h.view.render();
+  const inputNode = nodes(tree).find((n) => n.kind === 'Input');
+  assert.equal(inputNode?.attrs.h, 30);
+  assert.equal(inputNode?.attrs.border, 1);
 });
 
 test('worktree cards are indented; only the selected one shows its border', async () => {
