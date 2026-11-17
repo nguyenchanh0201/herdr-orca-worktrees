@@ -312,9 +312,13 @@ export default class Projects extends View {
           try {
             const keys = quitKeys(kind);
             await exec("hc", ["keys", t, ...keys], { timeout: 5000 });
-            await cx.sleep(400);
-            const rd = await exec("hc", ["read", t, "--lines", "40"], { timeout: 5000 });
-            typed = rd.code === 0 && quitTyped(kind, rd.stdout || "");
+            // A busy agent can take a while to redraw; wait up to ~2.5 s for the command to show before giving up.
+            for (let i = 0; i < 10 && !typed; i++) {
+              await cx.sleep(250);
+              const rd = await exec("hc", ["read", t, "--lines", "40"], { timeout: 5000 });
+              typed = rd.code === 0 && quitTyped(kind, rd.stdout || "");
+            }
+            if (!typed) await cx.sleep(500); // let a late redraw settle so the backspaces land on the typed keys
             await exec("hc", ["keys", t, ...(typed ? ["enter"] : keys.map(() => "backspace"))], { timeout: 5000 });
           } catch {}
           if (!typed) {
