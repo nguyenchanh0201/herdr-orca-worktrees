@@ -1,6 +1,27 @@
 #!/usr/bin/env node
 const commands = require("../src/commands");
 const projects = require("../src/projects");
+const { fetchAll } = require("../src/usage");
+
+function parseUsageArgs(args) {
+  let only;
+  const skip = [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--only" && i + 1 < args.length) {
+      only = args[++i];
+    } else if (arg.startsWith("--only=")) {
+      only = arg.slice("--only=".length);
+    } else if (arg === "--skip" && i + 1 < args.length) {
+      skip.push(args[++i]);
+    } else if (arg.startsWith("--skip=")) {
+      skip.push(arg.slice("--skip=".length));
+    }
+  }
+
+  return { only, skip };
+}
 
 function handleProjects(args) {
   const [sub, ...rest] = args;
@@ -20,7 +41,7 @@ function handleProjects(args) {
   }
 }
 
-function main() {
+async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const force = rest.includes("--force");
   const positional = rest.filter((a) => !a.startsWith("--"));
@@ -49,6 +70,9 @@ function main() {
     case "clone":
       result = projects.cloneProject(positional[0], positional[1], positional[2]);
       break;
+    case "usage":
+      result = await fetchAll(parseUsageArgs(rest));
+      break;
     default:
       result = { error: cmd ? `unknown command: ${cmd}` : "missing command" };
   }
@@ -56,8 +80,6 @@ function main() {
   process.stdout.write(JSON.stringify(result) + "\n");
 }
 
-try {
-  main();
-} catch (e) {
+main().catch((e) => {
   process.stdout.write(JSON.stringify({ error: e && e.message ? e.message : String(e) }) + "\n");
-}
+});
