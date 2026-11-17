@@ -573,4 +573,46 @@ test('unfolding a row shows details', async () => {
   assert.ok(all.some((s) => s.includes('claude --resume abc')), `expected argv in ${JSON.stringify(all)}`);
 });
 
+test('resources tab keeps row order stable across live updates until Refresh', async () => {
+  const snap = sampleSnap();
+  const h = await panelHarness({ shared: [['orca.resources', snap]] });
+  let all = texts(h.view.render(h.cx));
+  assert.ok(all.indexOf('big-mem-low-cpu') < all.indexOf('small-mem-high-cpu'));
+
+  // Live update flips memory values: order must stay locked.
+  const updated = sampleSnap();
+  updated.projects[0].worktrees[0].terminals[0].rss = 5000000;
+  updated.projects[0].worktrees[0].terminals[1].rss = 100000;
+  h.state.shared.set('orca.resources', updated);
+  all = texts(h.view.render(h.cx));
+  assert.ok(all.indexOf('big-mem-low-cpu') < all.indexOf('small-mem-high-cpu'));
+
+  // Clicking Refresh clears the locked order so the next render re-sorts.
+  const refresh = nodes(h.view.render(h.cx)).find((n) => n.attrs.id === 'res-refresh');
+  refresh.attrs.on_click({}, h.cx);
+  all = texts(h.view.render(h.cx));
+  assert.ok(all.indexOf('small-mem-high-cpu') < all.indexOf('big-mem-low-cpu'));
+});
+
+test('resources tab End button confirms and kills terminal without focusing it', async () => {
+  const h = await panelHarness({
+    shared: [['orca.resources', sampleSnap()]],
+    exec: () => ({ code: 0, stdout: '', stderr: '' }),
+  });
+  let tree = h.view.render(h.cx);
+  const endBtn = nodes(tree).find((n) => n.attrs.id === 'res-end-t1');
+  assert.ok(endBtn && endBtn.attrs.on_click);
+  endBtn.attrs.on_click({ stop_propagation() {} }, h.cx);
+  assert.equal(h.state.runs.length, 0);
+
+  tree = h.view.render(h.cx);
+  assert.ok(texts(tree).includes('End 1 terminal and their processes? One is running Claude Code.'));
+  nodes(tree).find((n) => n.attrs.id === 'pty-confirm-end').attrs.on_click({}, h.cx);
+  await h.flush();
+
+  const kills = h.state.execs.filter((e) => e.cmd === 'hc' && e.argv[0] === 'kill').map((e) => e.argv[1]);
+  assert.deepEqual(kills, ['t1']);
+});
+
+
 

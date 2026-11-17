@@ -66,6 +66,7 @@ export default class OrcaResourcesPanel extends View {
     this.folded = folded;
 
     this.sort = { by: "mem", dir: "desc" };
+    this.orderCache = new Map();
     this.detailsOpen = false;
     this.selected = new Set();
     this.confirming = null;
@@ -110,7 +111,28 @@ export default class OrcaResourcesPanel extends View {
     } else {
       this.sort = { by, dir: by === "name" ? "asc" : "desc" };
     }
+    this.orderCache.clear();
     cx.notify();
+  }
+
+  sortStable(items, keyFn, scopeKey) {
+    const list = [...(items ?? [])];
+    const cached = this.orderCache.get(scopeKey);
+    if (cached) {
+      return list.sort((a, b) => {
+        const ia = cached.get(keyFn(a)) ?? Infinity;
+        const ib = cached.get(keyFn(b)) ?? Infinity;
+        if (ia !== ib) return ia - ib;
+        return compareItems(a, b, this.sort);
+      });
+    }
+    list.sort((a, b) => compareItems(a, b, this.sort));
+    if (list.length > 0) {
+      const idxMap = new Map();
+      for (let i = 0; i < list.length; i++) idxMap.set(keyFn(list[i]), i);
+      this.orderCache.set(scopeKey, idxMap);
+    }
+    return list;
   }
 
   renderSparkline(t, points) {
@@ -174,7 +196,11 @@ export default class OrcaResourcesPanel extends View {
               .border(1)
               .border_color(t.border)
               .hover((s) => s.text_color(t.foreground).bg(t.selected))
-              .on_click(() => setShared("orca.resources.refresh", { at: Date.now() }))
+              .on_click((_e, cx) => {
+                this.orderCache.clear();
+                setShared("orca.resources.refresh", { at: Date.now() });
+                cx.notify();
+              })
               .child("Refresh"),
           ),
       )
@@ -262,21 +288,92 @@ export default class OrcaResourcesPanel extends View {
       );
   }
 
+  renderConfirmAndErrors(t, snap) {
+    return v_flex()
+      .w_full()
+      .when(Boolean(this.confirming?.length), (el) =>
+        el.child(
+          v_flex()
+            .w_full()
+            .px(12)
+            .py(8)
+            .gap(6)
+            .bg(t.raised)
+            .border_b(1)
+            .border_color(t.border)
+            .child(
+              div()
+                .text_size(11)
+                .text_color(t.foreground)
+                .child(this.confirmMessage(this.confirming, snap)),
+            )
+            .child(
+              h_flex()
+                .gap(8)
+                .justify_end()
+                .child(
+                  div()
+                    .id("pty-confirm-cancel")
+                    .px(8)
+                    .py(3)
+                    .rounded(4)
+                    .cursor_pointer()
+                    .border(1)
+                    .border_color(t.border)
+                    .text_size(11)
+                    .text_color(t.muted)
+                    .on_click((_e, cx) => {
+                      this.confirming = null;
+                      cx.notify();
+                    })
+                    .child("Cancel"),
+                )
+                .child(
+                  div()
+                    .id("pty-confirm-end")
+                    .px(8)
+                    .py(3)
+                    .rounded(4)
+                    .cursor_pointer()
+                    .bg(t.blocked)
+                    .text_size(11)
+                    .text_color(t.foreground)
+                    .on_click((_e, cx) => this.endTerminals(this.confirming, snap, cx))
+                    .child("End"),
+                ),
+            ),
+        ),
+      )
+      .when(this.endErrors.length > 0, (el) =>
+        el.child(
+          v_flex()
+            .w_full()
+            .px(12)
+            .py(6)
+            .gap(2)
+            .border_b(1)
+            .border_color(t.border)
+            .children(
+              this.endErrors.map((err) =>
+                div().text_size(11).text_color(t.blocked).child(err),
+              ),
+            ),
+        ),
+      );
+  }
+
   renderResourcesTab(t, snap) {
     const cpu = snap?.cpu ?? 0;
     const rss = snap?.rss ?? 0;
-    const projects = Array.isArray(snap?.projects)
-      ? [...snap.projects].sort((a, b) => compareItems(a, b, this.sort))
-      : [];
-    const other = Array.isArray(snap?.other)
-      ? [...snap.other].sort((a, b) => compareItems(a, b, this.sort))
-      : [];
+    const projects = this.sortStable(snap?.projects, (p) => p.key, "projects");
+    const other = this.sortStable(snap?.other, (r) => r.address, "other");
     const herdr = snap?.herdr ?? { cpu: 0, rss: 0 };
 
     return v_flex()
       .w_full()
       .flex_1()
       .overflow_hidden()
+      .child(this.renderConfirmAndErrors(t, snap))
       .child(
         v_flex()
           .w_full()
@@ -329,7 +426,7 @@ export default class OrcaResourcesPanel extends View {
           .children(
             projects.map((proj) => {
               const projFolded = this.folded.has(`p:${proj.key}`);
-              const worktrees = [...(proj.worktrees ?? [])].sort((a, b) => compareItems(a, b, this.sort));
+              const worktrees = this.sortStable(proj.worktrees, (w) => w.key, `p:${proj.key}`);
               return v_flex()
                 .w_full()
                 .child(
@@ -357,7 +454,7 @@ export default class OrcaResourcesPanel extends View {
                   el.children(
                     worktrees.map((wt) => {
                       const wtFolded = this.folded.has(`w:${wt.key}`);
-                      const terms = [...(wt.terminals ?? [])].sort((a, b) => compareItems(a, b, this.sort));
+                      const terms = this.sortStable(wt.terminals, (r) => r.address, `w:${wt.key}`);
                       return v_flex()
                         .w_full()
                         .child(
@@ -405,7 +502,27 @@ export default class OrcaResourcesPanel extends View {
                                     .child(div().text_size(12).text_color(t.foreground).child(row.label)),
                                 )
                                 .child(div().w(54).flex_none().flex().justify_end().text_size(11).text_color(t.dim).child(fmtCpu(row.cpu)))
-                                .child(div().w(72).flex_none().flex().justify_end().text_size(11).text_color(t.dim).child(fmtMem(row.rss))),
+                                .child(div().w(66).flex_none().flex().justify_end().text_size(11).text_color(t.dim).child(fmtMem(row.rss)))
+                                .child(
+                                  div()
+                                    .id(`res-end-${row.address}`)
+                                    .ml(6)
+                                    .px(5)
+                                    .py(1)
+                                    .rounded(4)
+                                    .flex_none()
+                                    .cursor_pointer()
+                                    .text_size(11)
+                                    .text_color(t.blocked)
+                                    .hover((s) => s.bg(t.selected))
+                                    .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+                                    .on_click((_e, cx) => {
+                                      cx.stop_propagation();
+                                      this.confirming = [row.address];
+                                      cx.notify();
+                                    })
+                                    .child("End"),
+                                ),
                             ),
                           ),
                         );
@@ -663,75 +780,7 @@ export default class OrcaResourcesPanel extends View {
               ),
           ),
       )
-      .when(Boolean(this.confirming?.length), (el) =>
-        el.child(
-          v_flex()
-            .w_full()
-            .px(12)
-            .py(8)
-            .gap(6)
-            .bg(t.raised)
-            .border_b(1)
-            .border_color(t.border)
-            .child(
-              div()
-                .text_size(11)
-                .text_color(t.foreground)
-                .child(this.confirmMessage(this.confirming, snap)),
-            )
-            .child(
-              h_flex()
-                .gap(8)
-                .justify_end()
-                .child(
-                  div()
-                    .id("pty-confirm-cancel")
-                    .px(8)
-                    .py(3)
-                    .rounded(4)
-                    .cursor_pointer()
-                    .border(1)
-                    .border_color(t.border)
-                    .text_size(11)
-                    .text_color(t.muted)
-                    .on_click((_e, cx) => {
-                      this.confirming = null;
-                      cx.notify();
-                    })
-                    .child("Cancel"),
-                )
-                .child(
-                  div()
-                    .id("pty-confirm-end")
-                    .px(8)
-                    .py(3)
-                    .rounded(4)
-                    .cursor_pointer()
-                    .bg(t.blocked)
-                    .text_size(11)
-                    .text_color(t.foreground)
-                    .on_click((_e, cx) => this.endTerminals(this.confirming, snap, cx))
-                    .child("End"),
-                ),
-            ),
-        ),
-      )
-      .when(this.endErrors.length > 0, (el) =>
-        el.child(
-          v_flex()
-            .w_full()
-            .px(12)
-            .py(6)
-            .gap(2)
-            .border_b(1)
-            .border_color(t.border)
-            .children(
-              this.endErrors.map((err) =>
-                div().text_size(11).text_color(t.blocked).child(err),
-              ),
-            ),
-        ),
-      )
+      .child(this.renderConfirmAndErrors(t, snap))
       .child(
         v_flex()
           .w_full()
