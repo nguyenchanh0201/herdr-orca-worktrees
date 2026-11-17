@@ -692,6 +692,33 @@ test('new group dialog prefills, rejects duplicates, creates', async () => {
   assert.deepEqual(h.state.overlays, [{ close: 'dlg' }]);
 });
 
+test('hovering subRow without prior click opens the side popup and closing parent closes it', async () => {
+  const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin' });
+  const tree = h.view.render();
+  const openInRow = nodes(tree).find((n) => n.attrs.id === 'open-in');
+  assert.ok(openInRow);
+  openInRow.attrs.on_hover(true, h.cx);
+  assert.equal(h.state.overlays.length, 1);
+  assert.equal(h.state.overlays[0].open.props.mode, 'open-in');
+
+  h.view.sideOverlayId = 'side-1';
+  h.view.close();
+  assert.deepEqual(h.state.overlays.slice(1), [{ close: 'side-1' }, { close: 'menu' }]);
+});
+
+test('group popup notifies on set-group error without refreshing', async () => {
+  const h = await harness(
+    () => ({ error: 'Not a git repository' }),
+    { overlay: 'sub', mode: 'group', path: '/r', name: 'Admin', group: 'CTM group', groups: ['CTM group', 'Tools'], parent: 'menu' }
+  );
+  const tree = h.view.render();
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Tools')).attrs.on_click({}, h.cx);
+  assert.equal(h.state.notifications.length, 1);
+  assert.equal(h.state.notifications[0].level, 'error');
+  assert.equal(h.state.notifications[0].body, 'Not a git repository');
+  assert.equal(h.state.shared.has('orca.projects.rev'), false);
+});
+
 test('worktree cards are indented; only the selected one shows its border', async () => {
   const h = await cardHarness();
   const card = nodes(h.view.render()).find((n) => n.attrs.id === 'card-s1');

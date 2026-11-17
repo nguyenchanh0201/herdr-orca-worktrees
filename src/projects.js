@@ -329,7 +329,7 @@ function setGroup(targetPath, name = "") {
 
   const lower = trimmed.toLowerCase();
   const existing = state.projects.find(
-    (p) => p !== entry && typeof p.group === "string" && p.group.trim().toLowerCase() === lower
+    (p) => typeof p.group === "string" && p.group.trim().toLowerCase() === lower
   );
   if (existing) {
     entry.group = existing.group.trim();

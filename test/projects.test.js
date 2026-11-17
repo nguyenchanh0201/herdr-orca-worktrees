@@ -260,3 +260,15 @@ test("rename and set-icon keep the group", async () => {
   await setIcon(a, "letter");
   assert.equal(listProjects().projects[0].group, "CTM group");
 });
+
+test("set-group with the project's own current group keeps order", () => {
+  const a = makeRepo().primary;
+  const b = makeRepo().primary;
+  addProject(a);
+  addProject(b);
+  setGroup(a, "CTM group");
+  // Now order is [b, a]
+  const res = setGroup(a, "ctm GROUP");
+  assert.deepEqual(res, { ok: true, path: a, group: "CTM group" });
+  assert.deepEqual(listProjects().projects.map((p) => p.path), [b, a]);
+});

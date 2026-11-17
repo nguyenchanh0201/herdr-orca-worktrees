@@ -165,6 +165,10 @@ export default class OrcaProject extends View {
   close() {
     if (this.closed) return;
     this.closed = true;
+    if (this.sideOverlayId) {
+      closeOverlay(this.sideOverlayId);
+      this.sideOverlayId = null;
+    }
     closeOverlay(props().overlay);
   }
 
@@ -239,9 +243,13 @@ export default class OrcaProject extends View {
         if (e?.bounds) this.rowBounds[id] = e.bounds;
       })
       .on_hover((hovered) => {
-        if (hovered && this.rowBounds[id]) onOpen(this.rowBounds[id]);
+        if (hovered && this.sideMode !== id) {
+          this.sideMode = id;
+          onOpen(this.rowBounds[id] ?? null);
+        }
       })
       .on_click((e) => {
+        this.sideMode = id;
         onOpen(e?.bounds ?? this.rowBounds[id] ?? null);
       })
       .child(div().flex_1().child(label))
@@ -951,8 +959,16 @@ export default class OrcaProject extends View {
             .on_click(async () => {
               const ids = this.appsInstalled.filter((a) => this.appsChosen.has(a.id)).map((a) => a.id);
               try {
-                await exec(config.node, [config.cli, "apps", "set", ...ids]);
-              } catch {}
+                const res = await exec(config.node, [config.cli, "apps", "set", ...ids]);
+                const parsed = JSON.parse(res.stdout || "{}");
+                if (parsed?.error) {
+                  notify({ title: "Customize apps", body: parsed.error, level: "error" });
+                  return;
+                }
+              } catch (err) {
+                notify({ title: "Customize apps", body: err?.message ?? String(err), level: "error" });
+                return;
+              }
               this.close();
             })
             .child("Save")
@@ -1001,7 +1017,17 @@ export default class OrcaProject extends View {
             "remove-from-group",
             "Remove from group",
             async () => {
-              await exec(config.node, [config.cli, "projects", "set-group", p.path]);
+              try {
+                const res = await exec(config.node, [config.cli, "projects", "set-group", p.path]);
+                const parsed = JSON.parse(res.stdout || "{}");
+                if (parsed?.error) {
+                  notify({ title: "Project Group", body: parsed.error, level: "error" });
+                  return;
+                }
+              } catch (err) {
+                notify({ title: "Project Group", body: err?.message ?? String(err), level: "error" });
+                return;
+              }
               setShared("orca.projects.rev", Date.now());
               this.close();
               if (p.parent) closeOverlay(p.parent);
@@ -1031,7 +1057,17 @@ export default class OrcaProject extends View {
             .text_color(t.foreground)
             .hover((s) => s.bg(t.selected))
             .on_click(async () => {
-              await exec(config.node, [config.cli, "projects", "set-group", p.path, g]);
+              try {
+                const res = await exec(config.node, [config.cli, "projects", "set-group", p.path, g]);
+                const parsed = JSON.parse(res.stdout || "{}");
+                if (parsed?.error) {
+                  notify({ title: "Project Group", body: parsed.error, level: "error" });
+                  return;
+                }
+              } catch (err) {
+                notify({ title: "Project Group", body: err?.message ?? String(err), level: "error" });
+                return;
+              }
               setShared("orca.projects.rev", Date.now());
               this.close();
               if (p.parent) closeOverlay(p.parent);
