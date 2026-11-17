@@ -161,16 +161,28 @@ person now wants Orca's dialog with a branch picker.
   shipped dialog does). Cases:
   1. `--name` given: must be a valid new branch name (`git check-ref-format
      --branch`), not existing locally (`"<name> already exists — pick it as
-     Create From and leave the name empty"`); runs `git worktree add -b
+     Create From and leave the name empty"`), and not existing as a remote
+     branch on any remote (`"<name> exists on <remote> — pick <remote>/<name>
+     as Create From"`, so a same-named unrelated branch never clashes on push); runs `git worktree add -b
      <name> <path> <base>`. With a remote base, also `--no-track` (a new
      branch doesn't track the branch it started from, as Orca).
-  2. no name, `base` is a **local** branch: if it's checked out in another
-     worktree → error `"<base> is already open in <path>"`; else `git
-     worktree add <path> <base>`.
+  2. no name, `base` is a **local** branch not checked out anywhere → `git
+     worktree add <path> <base>` (open that branch).
   3. no name, `base` is a **remote** branch `<remote>/<b>`: if local `<b>`
-     exists → as case 2 with `<b>`; else `git worktree add --track -b <b>
+     exists → as case 2/4 with `<b>`; else `git worktree add --track -b <b>
      <path> <remote>/<b>` (check the remote branch out as a local tracking
      branch).
+  4. no name, and the (local) base is already checked out — the dialog's
+     default state, since `main` is open in the main checkout → like Orca,
+     a **generated name**: case 1 with `name = suggestName(used)`, where
+     `suggestName` picks a random unused lower-case sea-creature name from a
+     fixed list of ~50 (`octopus`, `narwhal`, …), adding `-2`, `-3`… once all
+     are used; `used` = every local and remote branch short name plus every
+     folder name under `<root>/<repo basename>/`. `orca-wt branches` returns
+     the suggestion as `suggested` so the dialog can show it.
+  - Picking a branch that is open elsewhere is never an error; with no name
+    it becomes case 4 (Herdr's own "Open worktree" covers switching to an
+    existing one).
   - `path` already exists → error. Git errors → last 20 stderr lines.
   - Runs in the main checkout (`git -C <repo>`); `timeout` 590 s.
 - The new worktree's admin dir is fresh, so `orca-setup` applies orca.yaml /
@@ -203,9 +215,11 @@ draws nothing without `props().overlay`):
   as a base for a new name). Up/Down/Enter keyboard, Esc closes the list
   only.
 - **Branch name**: text input, placeholder `New branch name (optional)`;
-  hint under it, `muted`: with a name → "New branch from <base>"; empty and
-  base local → "Opens <base>"; empty and base remote → "Checks out <b>
-  tracking <remote>/<b>".
+  hint under it, `muted`: with a name → "New branch <name> from <base>";
+  empty, base local and free → "Opens <base>"; empty, base remote with no
+  local → "Checks out <b> tracking <remote>/<b>"; empty and base already open
+  → "New branch <suggested> from <base>" (the placeholder also shows
+  `<suggested>`).
 - **Agent**: a `Select` of Terminal + installed agents from `knownAgents()`
   (icons as `orca-new` draws them), default = last used (`localStorage`
   `agent.last`, by key), else Terminal.
@@ -246,8 +260,10 @@ draws nothing without `props().overlay`):
   `branches` lists local and remote, drops `origin/HEAD`, sorts by date,
   default `main`, `checkedOut` maps the main checkout's branch; `worktree-add`
   case 1 (new name from local base; from remote base → no upstream set),
-  existing name → error; case 2 local branch → checked out, already open →
-  error; case 3 remote-only branch → local tracking branch created
+  existing name → error; case 2 local branch → checked out; case 4 base
+  already open + no name → new branch named from the list, not colliding
+  with an existing branch or folder (seeded `random`), `-2` suffix when the
+  list is exhausted; name equal to a remote-only branch → error; case 3 remote-only branch → local tracking branch created
   (`git rev-parse --abbrev-ref <b>@{upstream}` = `origin/<b>`), remote branch
   whose local exists → uses local; invalid name; existing path; `slug` on
   `feat/x` → `feat-x`.
@@ -263,7 +279,8 @@ draws nothing without `props().overlay`):
   project, base `main (default)`, Terminal/last agent; search a branch; pick
   `origin/<remote-only branch>` with no name → space opens on a local
   tracking branch; pick `main` + name `try-x` + Claude → space with a Claude
-  tab and a Setup tab under the repo; pick a branch already open → error;
+  tab and a Setup tab under the repo; press ⌘↵ right after opening (base `main`, no name) → a new
+  sea-creature branch from `main` opens;
   Esc while "Creating…" → space still opens.
 
 ## Review notes
@@ -279,6 +296,13 @@ Builder check (2026-11-17): nothing important left. Settled details:
   4+ windows); drop lowest-used chips until they fit.
 - The 760×420 popup opens at the pointer from the bottom strip; confirm it
   stays on screen in the manual check (shrink width if not).
+
+Second builder check (2026-11-17), section 5, settled by mimicking Orca:
+the default state (empty name, `main` already open) creates a branch with a
+generated sea-creature name, as Orca does, instead of failing; a typed name
+that exists only on a remote is refused with a pointer to pick the remote
+branch. Also for the builder: test that a `Popup` list can draw past the
+420 px dialog's bottom; if not, grow the dialog while the list is open.
 
 ## Left to the builder
 
