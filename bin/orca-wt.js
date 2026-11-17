@@ -2,6 +2,28 @@
 const commands = require("../src/commands");
 const projects = require("../src/projects");
 const { fetchAll } = require("../src/usage");
+const worktree = require("../src/worktree");
+
+function parseFlaggedArgs(args) {
+  const flags = {};
+  const positional = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg.startsWith("--")) {
+      const eq = arg.indexOf("=");
+      if (eq !== -1) {
+        flags[arg.slice(2, eq)] = arg.slice(eq + 1);
+      } else if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
+        flags[arg.slice(2)] = args[++i];
+      } else {
+        flags[arg.slice(2)] = true;
+      }
+    } else {
+      positional.push(arg);
+    }
+  }
+  return { positional, flags };
+}
 
 function parseUsageArgs(args) {
   let only;
@@ -73,6 +95,20 @@ async function main() {
     case "usage":
       result = await fetchAll(parseUsageArgs(rest));
       break;
+    case "branches": {
+      const parsed = parseFlaggedArgs(rest);
+      result = worktree.listBranches(parsed.positional[0], parsed.flags.root);
+      break;
+    }
+    case "worktree-add": {
+      const parsed = parseFlaggedArgs(rest);
+      result = worktree.addWorktree(parsed.positional[0], {
+        base: parsed.flags.base,
+        name: parsed.flags.name,
+        root: parsed.flags.root,
+      });
+      break;
+    }
     default:
       result = { error: cmd ? `unknown command: ${cmd}` : "missing command" };
   }
