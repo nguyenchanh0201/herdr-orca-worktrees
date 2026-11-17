@@ -14,6 +14,9 @@ const {
   seedProjects,
   defaultCloneName,
   cloneProject,
+  setGroup,
+  renameProject,
+  setIcon,
 } = require("../src/projects");
 
 const CLI = path.resolve(__dirname, "../bin/orca-wt.js");
@@ -52,7 +55,7 @@ test("add primary and worktree once", () => {
   assert.deepEqual(addProject(repo.primary), { path: repo.primary, added: true });
   assert.deepEqual(addProject(repo.worktree), { path: repo.primary, added: false });
   assert.deepEqual(listProjects(), {
-    projects: [{ path: repo.primary, exists: true, name: null, icon: null, iconSource: null }],
+    projects: [{ path: repo.primary, exists: true, name: null, icon: null, iconSource: null, group: null }],
     seeded: true,
   });
 });
@@ -113,7 +116,7 @@ test("missing folder", () => {
   fs.rmSync(realCopied, { recursive: true, force: true });
 
   assert.deepEqual(listProjects(), {
-    projects: [{ path: realCopied, exists: false, name: null, icon: null, iconSource: null }],
+    projects: [{ path: realCopied, exists: false, name: null, icon: null, iconSource: null, group: null }],
     seeded: true,
   });
 });
@@ -139,7 +142,7 @@ test("clone local bare", () => {
   assert.deepEqual(res, { path: expectedDest });
   assert.ok(fs.existsSync(path.join(expectedDest, ".git")));
   assert.deepEqual(listProjects(), {
-    projects: [{ path: expectedDest, exists: true, name: null, icon: null, iconSource: null }],
+    projects: [{ path: expectedDest, exists: true, name: null, icon: null, iconSource: null, group: null }],
     seeded: true,
   });
 });
@@ -189,4 +192,71 @@ test("cli projects list", () => {
   });
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(JSON.parse(r.stdout.trim()), { projects: [], seeded: false });
+});
+
+test("set-group creates a group and moves the entry last", () => {
+  const a = makeRepo().primary;
+  const b = makeRepo().primary;
+  addProject(a);
+  addProject(b);
+  const res = setGroup(a, "CTM group");
+  assert.deepEqual(res, { ok: true, path: a, group: "CTM group" });
+  const listed = listProjects().projects;
+  assert.deepEqual(listed.map((p) => p.path), [b, a]);
+  assert.equal(listed[1].group, "CTM group");
+});
+
+test("set-group reuses an existing group's spelling and keeps order", () => {
+  const a = makeRepo().primary;
+  const b = makeRepo().primary;
+  addProject(a);
+  addProject(b);
+  setGroup(a, "CTM group");
+  const res = setGroup(b, "  ctm GROUP ");
+  assert.deepEqual(res, { ok: true, path: b, group: "CTM group" });
+  const listed = listProjects().projects;
+  assert.deepEqual(listed.map((p) => p.path), [b, a]);
+  assert.equal(listed[0].group, "CTM group");
+});
+
+test("set-group with no name removes the group", () => {
+  const a = makeRepo().primary;
+  addProject(a);
+  setGroup(a, "CTM group");
+  const res = setGroup(a);
+  assert.deepEqual(res, { ok: true, path: a, group: null });
+  const raw = JSON.parse(fs.readFileSync(path.join(tmpStateDir, "projects.json"), "utf8"));
+  assert.equal(Object.hasOwn(raw.projects[0], "group"), false);
+  assert.equal(listProjects().projects[0].group, null);
+});
+
+test("set-group saves an unsaved repo", () => {
+  const c = makeRepo().primary;
+  const res = setGroup(c, "X");
+  assert.deepEqual(res, { ok: true, path: c, group: "X" });
+  const listed = listProjects().projects;
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].path, c);
+  assert.equal(listed[0].group, "X");
+});
+
+test("set-group on a non-git folder errors and leaves the file alone", () => {
+  const a = makeRepo().primary;
+  addProject(a);
+  const file = path.join(tmpStateDir, "projects.json");
+  const before = fs.readFileSync(file);
+  const nonGit = mkTmp("orca-nongit-");
+  const res = setGroup(nonGit, "X");
+  assert.ok(res.error);
+  const after = fs.readFileSync(file);
+  assert.equal(Buffer.compare(before, after), 0);
+});
+
+test("rename and set-icon keep the group", async () => {
+  const a = makeRepo().primary;
+  addProject(a);
+  setGroup(a, "CTM group");
+  renameProject(a, "Server");
+  await setIcon(a, "letter");
+  assert.equal(listProjects().projects[0].group, "CTM group");
 });

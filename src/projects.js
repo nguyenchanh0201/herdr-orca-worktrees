@@ -137,6 +137,7 @@ function listProjects() {
       name: p.name || null,
       icon: savedIconFile(p.icon),
       iconSource: p.icon?.source || null,
+      group: typeof p.group === "string" && p.group.trim() ? p.group.trim() : null,
     })),
     seeded: true,
   };
@@ -302,6 +303,46 @@ function renameProject(targetPath, name = "") {
   else delete entry.name;
   writeProjectsAtomic(state.projects);
   return { path: entry.path, name: trimmed || null };
+}
+
+function setGroup(targetPath, name = "") {
+  let state = readProjectsFile();
+  if (state.error) return { error: state.error };
+  let resolvedPath = targetPath;
+  let entry = state.projects.find((p) => p.path === resolvedPath);
+  if (!entry) {
+    const added = addProject(targetPath);
+    if (added.error) return { error: added.error };
+    resolvedPath = added.path;
+    state = readProjectsFile();
+    if (state.error) return { error: state.error };
+    entry = state.projects.find((p) => p.path === resolvedPath);
+    if (!entry) return { error: "Project is not saved" };
+  }
+
+  const trimmed = typeof name === "string" ? name.trim() : "";
+  if (!trimmed) {
+    delete entry.group;
+    writeProjectsAtomic(state.projects);
+    return { ok: true, path: entry.path, group: null };
+  }
+
+  const lower = trimmed.toLowerCase();
+  const existing = state.projects.find(
+    (p) => p !== entry && typeof p.group === "string" && p.group.trim().toLowerCase() === lower
+  );
+  if (existing) {
+    entry.group = existing.group.trim();
+  } else {
+    entry.group = trimmed;
+    const idx = state.projects.indexOf(entry);
+    if (idx !== -1 && idx !== state.projects.length - 1) {
+      state.projects.splice(idx, 1);
+      state.projects.push(entry);
+    }
+  }
+  writeProjectsAtomic(state.projects);
+  return { ok: true, path: entry.path, group: entry.group };
 }
 
 function addProject(folder) {
@@ -477,4 +518,5 @@ module.exports = {
   seedProjects,
   defaultCloneName,
   cloneProject,
+  setGroup,
 };

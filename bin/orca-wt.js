@@ -56,6 +56,8 @@ function handleProjects(args) {
       return projects.listProjects();
     case "rename":
       return projects.renameProject(rest[0], rest.slice(1).join(" "));
+    case "set-group":
+      return projects.setGroup(rest[0], rest.slice(1).join(" "));
     case "resolve-icons":
       return projects.resolveIcons();
     case "set-icon":

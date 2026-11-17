@@ -392,7 +392,7 @@ test("listProjects falls back for high-bit-mutated WebP magic without rewriting 
   fs.writeFileSync(path.join(process.env.HERDR_APP_HOME, "corrupt.webp"), Buffer.from("d2c9c6c600000000d7c5c2d0", "hex"));
   const entries = [{ path: project, icon: { source: "custom", file: "corrupt.webp" } }];
   save(entries);
-  assert.deepEqual(listProjects().projects, [{ path: project, exists: true, name: null, icon: null, iconSource: "custom" }]);
+  assert.deepEqual(listProjects().projects, [{ path: project, exists: true, name: null, icon: null, iconSource: "custom", group: null }]);
   assert.deepEqual(stored(), entries);
 });
 
@@ -418,10 +418,10 @@ test("listProjects reads old entries and reports name/icon", () => {
     { path: c, icon: { source: "letter", file: "data/project-icons/x.png" } },
     { path: d, icon: { source: "repo", file: "data/project-icons/gone.png" } }]);
   assert.deepEqual(listProjects(), { seeded: true, projects: [
-    { path: project, exists: true, name: null, icon: null, iconSource: null },
-    { path: b, exists: false, name: "Admin", icon: "data/project-icons/x.png", iconSource: "github" },
-    { path: c, exists: false, name: null, icon: null, iconSource: "letter" },
-    { path: d, exists: false, name: null, icon: null, iconSource: "repo" },
+    { path: project, exists: true, name: null, icon: null, iconSource: null, group: null },
+    { path: b, exists: false, name: "Admin", icon: "data/project-icons/x.png", iconSource: "github", group: null },
+    { path: c, exists: false, name: null, icon: null, iconSource: "letter", group: null },
+    { path: d, exists: false, name: null, icon: null, iconSource: "repo", group: null },
   ] });
 });
 
