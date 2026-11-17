@@ -1109,13 +1109,15 @@ export default class Projects extends View {
       .hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => this.toggleCollapsed(g.key, cx))
       .when(g.kind === "repo", (el) =>
-        el.on_mouse_down("right", (_e, cx) => {
+        el.on_mouse_down("right", (e, cx) => {
           cx.stop_propagation();
+          const anchor = e?.position ? { x: e.position.x, y: e.position.y } : undefined;
           openOverlay({
             mod: "orca-project",
             kind: "popup",
             width: 220,
-            height: 175,
+            height: 185,
+            ...(anchor ? { at: anchor } : {}),
             props: {
               mode: "header",
               path: g.primary,
@@ -1123,6 +1125,7 @@ export default class Projects extends View {
               name: g.displayName,
               group: g.group ?? null,
               groups: groupNames,
+              ...(anchor ? { anchor } : {}),
             },
           });
         })
@@ -1204,13 +1207,15 @@ export default class Projects extends View {
       .when(!sleeping && Boolean(space), (el) =>
         el.on_click(() => run("space.select", { id: space.id }))
       )
-      .on_mouse_down("right", (_e, cx) => {
+      .on_mouse_down("right", (e, cx) => {
         cx.stop_propagation();
+        const anchor = e?.position ? { x: e.position.x, y: e.position.y } : undefined;
         openOverlay({
           mod: "orca-project",
           kind: "popup",
           width: 220,
-          height: 140,
+          height: 180,
+          ...(anchor ? { at: anchor } : {}),
           props: {
             mode: "space",
             space: space ? space.id : null,
@@ -1218,6 +1223,7 @@ export default class Projects extends View {
             folder: worktree,
             sleeping,
             hasAgents,
+            ...(anchor ? { anchor } : {}),
           },
         });
       })

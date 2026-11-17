@@ -204,7 +204,7 @@ test('header right-click opens expanded popup with the display name', async () =
   await h.flush();
   const tree = h.view.renderHeader({ kind: 'repo', key: 'r', primary: '/repo', saved: true, displayName: 'Admin Portal', rows: [] }, false, {});
   tree.attrs.on_mouse_down[1]({}, h.cx);
-  assert.deepEqual(h.state.overlays, [{ open: { mod: 'orca-project', kind: 'popup', width: 220, height: 175, props: { mode: 'header', path: '/repo', saved: true, name: 'Admin Portal', group: null, groups: [] } } }]);
+  assert.deepEqual(h.state.overlays, [{ open: { mod: 'orca-project', kind: 'popup', width: 220, height: 185, props: { mode: 'header', path: '/repo', saved: true, name: 'Admin Portal', group: null, groups: [] } } }]);
 });
 
 // Catches actions on unsaved groups, missing/reordered rows, or incorrect dialog contracts.
@@ -720,12 +720,12 @@ test('group popup notifies on set-group error without refreshing', async () => {
 });
 
 test('subRow captures bounds on mouse_move, Escape in side popup closes parent, and non-subRow hover closes side popup', async () => {
-  const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin' });
+  const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin', anchor: { x: 100, y: 50 } });
   const tree = h.view.render();
   const openInRow = nodes(tree).find((n) => n.attrs.id === 'open-in');
-  openInRow.attrs.on_mouse_move({ bounds: { x: 10, y: 20, width: 180, height: 31 } }, h.cx);
+  openInRow.attrs.on_mouse_move({ bounds: { x: 5, y: 20, width: 210, height: 31 } }, h.cx);
   assert.equal(h.state.overlays.length, 1);
-  assert.deepEqual(h.state.overlays[0].open.at, { x: 194, y: 20 });
+  assert.deepEqual(h.state.overlays[0].open.at, { x: 319, y: 70 });
 
   h.view.sideOverlayId = 'side-1';
   const renameRow = nodes(tree).find((n) => n.attrs.id === 'rename-project');

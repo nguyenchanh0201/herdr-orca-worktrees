@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { stateDir } = require("./projects");
+const { stateDir, herdrHome } = require("./projects");
 
 const APPS = [
   { id: "vscode", name: "VS Code", app: "Visual Studio Code" },
@@ -27,12 +27,56 @@ function appsFilePath() {
   return path.join(stateDir(), "apps.json");
 }
 
+function resolveAppIcon(entry, bundlePath) {
+  const rel = `data/app-icons/${entry.id}.png`;
+  const dest = path.join(herdrHome(), rel);
+  if (fs.existsSync(dest)) return rel;
+  if (!bundlePath || !fs.existsSync(path.join(bundlePath, "Contents", "Info.plist"))) return null;
+
+  const plist = spawnSync(
+    "plutil",
+    ["-extract", "CFBundleIconFile", "raw", path.join(bundlePath, "Contents", "Info.plist")],
+    { encoding: "utf8" }
+  );
+  if (plist.status !== 0) return null;
+  let iconName = (plist.stdout || "").trim();
+  if (!iconName) return null;
+  if (!iconName.endsWith(".icns")) iconName += ".icns";
+  const icnsPath = path.join(bundlePath, "Contents", "Resources", iconName);
+  if (!fs.existsSync(icnsPath)) return null;
+
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const conv = spawnSync("sips", ["-s", "format", "png", "-z", "32", "32", icnsPath, "--out", dest], {
+      encoding: "utf8",
+    });
+    if (conv.status === 0 && fs.existsSync(dest)) return rel;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function installedApps(dirs = DEFAULT_DIRS) {
   const searchDirs = Array.isArray(dirs) ? dirs : DEFAULT_DIRS;
-  return APPS.filter((a) => {
-    if (a.id === "finder") return true;
-    return searchDirs.some((d) => fs.existsSync(path.join(d, `${a.app}.app`)));
-  }).map(({ id, name }) => ({ id, name }));
+  const out = [];
+  for (const a of APPS) {
+    let bundle = null;
+    if (a.id === "finder") {
+      bundle = "/System/Library/CoreServices/Finder.app";
+    } else {
+      for (const d of searchDirs) {
+        const candidate = path.join(d, `${a.app}.app`);
+        if (fs.existsSync(candidate)) {
+          bundle = candidate;
+          break;
+        }
+      }
+      if (!bundle) continue;
+    }
+    out.push({ id: a.id, name: a.name, icon: resolveAppIcon(a, bundle) });
+  }
+  return out;
 }
 
 function readSavedApps() {

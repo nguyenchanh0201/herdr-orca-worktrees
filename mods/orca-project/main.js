@@ -1,4 +1,4 @@
-import { View, div } from "gpui-kit";
+import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { theme, openOverlay, closeOverlay, props, shared, setShared, checking, pickFolder, home, exec, notify } from "herdr";
 import config from "./config.js";
@@ -282,6 +282,17 @@ export default class OrcaProject extends View {
     this.sideOverlayId = openOverlay(spec);
   }
 
+  sideAt(bounds) {
+    const p = props();
+    if (p.anchor && bounds) {
+      return { x: p.anchor.x + bounds.x + bounds.width + 4, y: p.anchor.y + bounds.y };
+    }
+    if (p.anchor) {
+      return { x: p.anchor.x + 224, y: p.anchor.y };
+    }
+    return "pointer";
+  }
+
   openOpenIn(folder, bounds) {
     this.openSidePopup({
       mod: "orca-project",
@@ -289,7 +300,7 @@ export default class OrcaProject extends View {
       frame: "none",
       width: 200,
       height: 280,
-      at: bounds ? { x: bounds.x + bounds.width + 4, y: bounds.y } : "pointer",
+      at: this.sideAt(bounds),
       props: { mode: "open-in", folder, parent: props().overlay },
     });
   }
@@ -301,7 +312,7 @@ export default class OrcaProject extends View {
       frame: "none",
       width: 220,
       height: 280,
-      at: bounds ? { x: bounds.x + bounds.width + 4, y: bounds.y } : "pointer",
+      at: this.sideAt(bounds),
       props: {
         mode: "group",
         path: p.path,
@@ -843,6 +854,12 @@ export default class OrcaProject extends View {
       );
   }
 
+  appIconEl(app, t) {
+    return app?.icon
+      ? image(app.icon).size(14).rounded(3).flex_none()
+      : svg("icons/folder.svg").size(14).flex_none().text_color(t.muted);
+  }
+
   renderOpenIn(t) {
     const p = props();
     const chosenApps = this.appsInstalled.filter((a) => this.appsChosen.has(a.id));
@@ -866,10 +883,18 @@ export default class OrcaProject extends View {
 
     for (const app of chosenApps) {
       wrap.child(
-        this.popupRow(
-          `open-in-${app.id}`,
-          app.name,
-          async () => {
+        h_flex()
+          .id(`open-in-${app.id}`)
+          .h(31)
+          .px(9)
+          .gap(8)
+          .rounded(7)
+          .items_center()
+          .flex_none()
+          .cursor_pointer()
+          .text_color(t.foreground)
+          .hover((s) => s.bg(t.selected))
+          .on_click(async () => {
             try {
               const res = await exec(config.node, [config.cli, "open", app.id, p.folder]);
               const parsed = JSON.parse(res.stdout || "{}");
@@ -881,9 +906,9 @@ export default class OrcaProject extends View {
             }
             this.close();
             if (p.parent) closeOverlay(p.parent);
-          },
-          t
-        )
+          })
+          .child(this.appIconEl(app, t))
+          .child(div().flex_1().truncate().child(app.name))
       );
     }
 
@@ -910,7 +935,7 @@ export default class OrcaProject extends View {
   }
 
   renderApps(t) {
-    const checkRow = (id, label, checked, onClick) =>
+    const checkRow = (id, app, checked, onClick) =>
       h_flex()
         .id(id)
         .h(30)
@@ -922,7 +947,8 @@ export default class OrcaProject extends View {
         .hover((s) => s.bg(t.selected))
         .on_click(onClick)
         .child(div().w(14).flex_none().text_color(checked ? t.foreground : t.dim).child(checked ? "✓" : ""))
-        .child(div().flex_1().text_color(t.foreground).child(label));
+        .child(this.appIconEl(app, t))
+        .child(div().flex_1().text_color(t.foreground).child(app.name));
 
     const wrap = v_flex()
       .id("orca-project-apps")
@@ -940,7 +966,7 @@ export default class OrcaProject extends View {
     for (const app of this.appsInstalled) {
       const checked = this.appsChosen.has(app.id);
       wrap.child(
-        checkRow(`app-${app.id}`, app.name, checked, (_e, cx) => {
+        checkRow(`app-${app.id}`, app, checked, (_e, cx) => {
           if (this.appsChosen.has(app.id)) this.appsChosen.delete(app.id);
           else this.appsChosen.add(app.id);
           cx.notify();
