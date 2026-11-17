@@ -1,0 +1,1 @@
+{"command":{"name":"usage"},"status":"SUCCESS","groups":[{"name":"Claude","buckets":[{"name":"Weekly","window":"weekly","remaining_fraction":0.62,"reset_time":"2026-11-24T00:00:00Z"}]}]}
