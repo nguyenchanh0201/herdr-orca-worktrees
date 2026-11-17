@@ -39,7 +39,7 @@ Make the `orca` layout's chrome match Orca:
 3. agy chip text like Orca: `20% Gemini wk` (group name without a trailing
    " Models", then `wk` / `5h`).
 4. Click the chips → the Orca-style two-pane panel.
-5. `+` on a project → **Create worktree** dialog (section 6); it can start a
+5. `+` on a project → **Create worktree** dialog (section 5); it can start a
    worktree from any local branch or remote-tracking branch, either as a new
    branch based on it or by checking that branch out.
 6. ◧ at the top-left of the tab bar while the sidebar is hidden; the
@@ -134,7 +134,7 @@ The bottom row `orca-strip` (28 px) becomes:
   `Resets now` right (`muted`). Error → its text in `blocked` above the box.
   `ok` with no windows → "No limits reported".
 
-### 6. Create worktree dialog (`mods/orca-worktree`)
+### 5. Create worktree dialog (`mods/orca-worktree`)
 
 This reverses the agent-picker spec's choice to reuse Herdr's worktree dialog
 (that choice was "approach A" because Herdr's dialog can't pick a base). The
@@ -214,7 +214,7 @@ draws nothing without `props().overlay`):
 - `orca-new` is retired: `+` no longer opens it; it is removed from
   `install.sh` and the repo (the installed copy can be deleted by hand).
 
-### 7. Top sidebar toggle (`mods/orca-tabs`)
+### 6. Top sidebar toggle (`mods/orca-tabs`)
 
 - Copy `~/.config/herdr-app/mods/tabs/` (`main.js`, `mod.json` with title
   `"Tabs (orca)"`, its svgs) into the repo as `mods/orca-tabs/`; asset paths
