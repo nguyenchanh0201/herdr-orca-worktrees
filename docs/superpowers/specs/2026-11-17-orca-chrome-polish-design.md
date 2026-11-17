@@ -242,8 +242,10 @@ activity view, badge = agents needing you), options (sliders), Add project
   `muted`) and a chevron that collapses all groups when any is open, else
   expands all (writes `projects.collapsed`). Right side, 26 px icon buttons
   (`muted`, hover `hover` + `foreground`):
-  1. **Activity** (bell, `svg("mods/workspace-chrome/…")` if a bell exists,
-     else text `🔔`-free glyph `◔`): toggles the list body between
+  1. **Activity** (bell icon — Herdr ships no bell, sliders or refresh
+     icon, so add our own 24×24 stroke SVGs in the mods that use them:
+     `mods/projects/bell.svg`, `mods/projects/sliders.svg`,
+     `mods/orca-usage/refresh.svg`, drawn like Herdr's line icons): toggles the list body between
      **Projects** (today's list) and **Activity**: every agent from `agents()`
      sorted blocked > done > working > idle, then most recent change first;
      each row = icon, program name, space label (`label(space)`), status word
@@ -252,7 +254,7 @@ activity view, badge = agents needing you), options (sliders), Add project
      the icon, hidden at 0. Pressed state = `selected` background. The view
      is remembered in `localStorage` `projects.view`. The title reads
      `Activity` while in that view.
-  2. **Options** (sliders icon, `settings.svg` fallback) → popup
+  2. **Options** (`sliders.svg`) → popup
      (`orca-project` mode `options`) with: **Collapse all projects**,
      **Expand all projects**, **Sort projects: Order added | Name**,
      **Hide main checkouts** (hides `★` rows; a project then shows only its
