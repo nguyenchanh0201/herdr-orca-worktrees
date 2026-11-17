@@ -1,19 +1,7 @@
-import { View, div, svg } from "gpui-kit";
+import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, machines, focused, exec, run, openOverlay, notify, theme, checking, layout, shared } from "herdr";
+import { spaces, machines, focused, exec, run, openOverlay, notify, theme, checking } from "herdr";
 import config from "./config.js";
-
-function findNode(tree, id) {
-  if (!tree) return null;
-  if (tree.id === id) return tree;
-  if (Array.isArray(tree.children)) {
-    for (const child of tree.children) {
-      const found = findNode(child, id);
-      if (found) return found;
-    }
-  }
-  return null;
-}
 
 export default class OrcaSetup extends View {
   init(_p, cx) {
@@ -143,8 +131,6 @@ export default class OrcaSetup extends View {
 
   render(cx) {
     this.scan(cx);
-    shared("orca.sidebar.hidden");
-    const hidden = Boolean(findNode(layout(), "sidebar")?.hidden);
     const t = theme();
     const f = focused();
     const focusId = f?.space ?? null;
@@ -169,38 +155,20 @@ export default class OrcaSetup extends View {
       .px(10)
       .gap(8)
       .items_center()
+      .justify_end()
       .bg(t.chrome)
       .border_t(1)
       .border_color(t.border)
       .text_size(12)
-      .when(hidden, (el) =>
-        el.child(
-          div()
-            .id("orca-show-sidebar")
-            .w(20)
-            .h(20)
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(4)
-            .hover((s) => s.bg(t.hover))
-            .cursor_pointer()
-            .on_click(() => run("layout.show", { id: "sidebar" }))
-            .child(svg("mods/workspace-chrome/sidebar.svg").size(14).text_color(t.muted)),
-        ),
-      )
-      .child(div().flex_none().text_color(t.dim).child("orca"))
       .when(Boolean(this.status), (el) =>
         el.child(
           div()
-            .flex_1()
             .min_w(0)
             .truncate()
             .text_color(this.error ? t.blocked : t.muted)
             .child(this.status),
         ),
       )
-      .when(!this.status, (el) => el.child(div().flex_1()))
       .when(showRemove, (el) =>
         el.child(
           h_flex()

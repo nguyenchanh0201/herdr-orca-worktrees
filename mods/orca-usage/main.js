@@ -2,7 +2,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { theme, knownAgents, exec, openOverlay, shared, setShared, checking } from "herdr";
 import config from "./config.js";
-import { headline } from "./format.js";
+import { chipText } from "./format.js";
 import { merge } from "./merge.js";
 
 function maxUsed(p) {
@@ -19,8 +19,16 @@ export default class OrcaUsage extends View {
     this.lastRefresh = shared("orca.usage.refresh")?.at ?? null;
     this.icons = {};
     this.width = 420;
+    let mode = "compact";
+    try {
+      const saved = localStorage.getItem("usage.mode");
+      if (saved === "detailed" || saved === "compact") mode = saved;
+    } catch {}
+    this.mode = mode;
 
     if (checking()) return;
+
+    setShared("orca.usage.mode", this.mode);
 
     cx.spawn(async (cx) => {
       try {
@@ -42,6 +50,13 @@ export default class OrcaUsage extends View {
   }
 
   checkRefresh(cx) {
+    const m = shared("orca.usage.mode");
+    if ((m === "compact" || m === "detailed") && m !== this.mode) {
+      this.mode = m;
+      try {
+        localStorage.setItem("usage.mode", m);
+      } catch {}
+    }
     const req = shared("orca.usage.refresh");
     if (req?.at && req.at !== this.lastRefresh) {
       this.lastRefresh = req.at;
@@ -119,7 +134,8 @@ export default class OrcaUsage extends View {
         ? ["claude", "codex", "agy"].map((id) => ({ id, windows: [] }))
         : this.providers.filter((p) => p.status !== "unavailable");
 
-    const maxChips = Math.max(0, Math.floor(this.width / 110));
+    const perChip = this.mode === "detailed" ? 210 : 115;
+    const maxChips = Math.max(0, Math.floor((this.width - 80) / perChip));
     if (chips.length > maxChips) {
       const kept = new Set(
         [...chips]
@@ -132,40 +148,81 @@ export default class OrcaUsage extends View {
 
     return h_flex()
       .id("orca-usage")
-      .w_full()
-      .h_full()
-      .justify_end()
+      .size_full()
       .items_center()
-      .gap(12)
+      .px(10)
+      .gap(10)
       .text_size(12)
-      .cursor_pointer()
       .on_size_change((e, cx) => {
         if (e?.width && e.width !== this.width) {
           this.width = e.width;
           cx.notify();
         }
       })
-      .on_click(() => {
-        openOverlay({ mod: "orca-usage-panel", kind: "popup", width: 340, height: 360 });
-      })
-      .children(
-        chips.map((p) => {
-          const ic = this.icons[p.id];
-          const iconEl = ic?.icon
-            ? ic.tint
-              ? svg(ic.icon).size(13).flex_none().text_color(textColor)
-              : image(ic.icon).size(13).flex_none()
-            : div().text_color(textColor).child(p.id);
-          return h_flex()
-            .items_center()
-            .gap(5)
-            .flex_none()
-            .child(iconEl)
-            .child(div().text_color(textColor).child(headline(p, now)))
-            .when(p.status === "error", (el) =>
-              el.child(div().text_color(t.blocked).child("⚠"))
-            );
-        })
+      .child(div().flex_none().text_color(t.dim).child("Used"))
+      .child(
+        h_flex()
+          .items_center()
+          .gap(12)
+          .cursor_pointer()
+          .on_click(() => {
+            openOverlay({ mod: "orca-usage-panel", kind: "popup", width: 760, height: 420 });
+          })
+          .children(
+            chips.map((p) => {
+              const ic = this.icons[p.id];
+              const iconEl = ic?.icon
+                ? ic.tint
+                  ? svg(ic.icon).size(13).flex_none().text_color(textColor)
+                  : image(ic.icon).size(13).flex_none()
+                : div().text_color(textColor).child(p.id);
+              const maxPct = maxUsed(p);
+              return h_flex()
+                .items_center()
+                .gap(5)
+                .flex_none()
+                .child(iconEl)
+                .when(this.mode === "detailed" && p.windows?.length > 0, (el) =>
+                  el.child(
+                    div()
+                      .w(48)
+                      .h(6)
+                      .rounded(3)
+                      .bg(t.border)
+                      .overflow_hidden()
+                      .child(
+                        div()
+                          .h_full()
+                          .w(Math.round((48 * Math.min(100, Math.max(0, maxPct))) / 100))
+                          .bg(t.muted),
+                      ),
+                  ),
+                )
+                .child(div().text_color(textColor).child(chipText(p, this.mode, now)))
+                .when(p.status === "error", (el) =>
+                  el.child(div().text_color(t.blocked).child("⚠")),
+                );
+            }),
+          ),
+      )
+      .child(
+        div()
+          .id("usage-refresh")
+          .flex_none()
+          .p(2)
+          .rounded(4)
+          .cursor_pointer()
+          .text_color(t.muted)
+          .hover((s) => s.text_color(t.foreground).bg(t.hover))
+          .on_click((_e, cx) => {
+            cx.stop_propagation();
+            setShared("orca.usage.refresh", { at: Date.now(), force: true });
+          })
+          .child(
+            this.fetching
+              ? svg("mods/orca-usage/refresh.svg").size(13).spin(900)
+              : svg("mods/orca-usage/refresh.svg").size(13),
+          ),
       );
   }
 }
