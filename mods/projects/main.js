@@ -1011,7 +1011,8 @@ export default class Projects extends View {
           displayGroups = hideMainRows(displayGroups);
         }
 
-        const sections = projectGroups(displayGroups, this.options.sort);
+        const savedOrder = new Map(this.saved.map((s, i) => [s.path, i]));
+        const sections = projectGroups(displayGroups, this.options.sort, savedOrder);
         const groupNames = sections.filter((s) => Boolean(s.name)).map((s) => s.name);
         for (const section of sections) {
           const isGroup = Boolean(section.key);
@@ -1114,7 +1115,7 @@ export default class Projects extends View {
             mod: "orca-project",
             kind: "popup",
             width: 220,
-            height: 150,
+            height: 175,
             props: {
               mode: "header",
               path: g.primary,

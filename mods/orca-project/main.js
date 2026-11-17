@@ -21,6 +21,7 @@ export default class OrcaProject extends View {
     this.closed = false;
     this.rowBounds = {};
     this.sideOverlayId = null;
+    this.sideMode = null;
     this.handle.focus();
 
     if (this.mode === "open-in" || this.mode === "apps") {
@@ -168,6 +169,7 @@ export default class OrcaProject extends View {
     if (this.sideOverlayId) {
       closeOverlay(this.sideOverlayId);
       this.sideOverlayId = null;
+      this.sideMode = null;
     }
     closeOverlay(props().overlay);
   }
@@ -224,6 +226,13 @@ export default class OrcaProject extends View {
       .cursor_pointer()
       .text_color(t.foreground)
       .hover((s) => s.bg(t.selected))
+      .on_hover((hovered) => {
+        if (hovered && this.sideOverlayId) {
+          closeOverlay(this.sideOverlayId);
+          this.sideOverlayId = null;
+          this.sideMode = null;
+        }
+      })
       .on_click(onClick)
       .child(div().flex_1().child(label));
   }
@@ -239,6 +248,15 @@ export default class OrcaProject extends View {
       .cursor_pointer()
       .text_color(t.foreground)
       .hover((s) => s.bg(t.selected))
+      .on_mouse_move((e) => {
+        if (e?.bounds) {
+          this.rowBounds[id] = e.bounds;
+          if (this.sideMode !== id) {
+            this.sideMode = id;
+            onOpen(e.bounds);
+          }
+        }
+      })
       .on_mouse_down("left", (e) => {
         if (e?.bounds) this.rowBounds[id] = e.bounds;
       })
@@ -248,9 +266,9 @@ export default class OrcaProject extends View {
           onOpen(this.rowBounds[id] ?? null);
         }
       })
-      .on_click((e) => {
+      .on_click(() => {
         this.sideMode = id;
-        onOpen(e?.bounds ?? this.rowBounds[id] ?? null);
+        onOpen(this.rowBounds[id] ?? null);
       })
       .child(div().flex_1().child(label))
       .child(div().flex_none().text_color(t.dim).child("›"));
@@ -270,7 +288,7 @@ export default class OrcaProject extends View {
       kind: "popup",
       frame: "none",
       width: 200,
-      height: 220,
+      height: 280,
       at: bounds ? { x: bounds.x + bounds.width + 4, y: bounds.y } : "pointer",
       props: { mode: "open-in", folder, parent: props().overlay },
     });
@@ -282,7 +300,7 @@ export default class OrcaProject extends View {
       kind: "popup",
       frame: "none",
       width: 220,
-      height: 220,
+      height: 280,
       at: bounds ? { x: bounds.x + bounds.width + 4, y: bounds.y } : "pointer",
       props: {
         mode: "group",
@@ -832,11 +850,18 @@ export default class OrcaProject extends View {
       .id("orca-project-open-in")
       .w_full()
       .bg(t.popover)
+      .border(1)
+      .border_color(t.border)
+      .rounded(8)
+      .overflow_y_scrollbar()
       .p(5)
       .text_size(12.8)
       .track_focus(this.handle)
       .on_key_down((e) => {
-        if (e.key === "escape") this.close();
+        if (e.key === "escape") {
+          this.close();
+          if (p.parent) closeOverlay(p.parent);
+        }
       });
 
     for (const app of chosenApps) {
@@ -982,11 +1007,18 @@ export default class OrcaProject extends View {
       .id("orca-project-group")
       .w_full()
       .bg(t.popover)
+      .border(1)
+      .border_color(t.border)
+      .rounded(8)
+      .overflow_y_scrollbar()
       .p(5)
       .text_size(12.8)
       .track_focus(this.handle)
       .on_key_down((e) => {
-        if (e.key === "escape") this.close();
+        if (e.key === "escape") {
+          this.close();
+          if (p.parent) closeOverlay(p.parent);
+        }
       })
       .child(
         this.popupRow(
@@ -999,7 +1031,7 @@ export default class OrcaProject extends View {
               mod: "orca-project",
               kind: "dialog",
               width: 420,
-              height: 200,
+              height: 228,
               props: {
                 mode: "new-group",
                 path: p.path,
@@ -1111,14 +1143,17 @@ export default class OrcaProject extends View {
     const empty = !this.groupInput.value().trim();
     return v_flex()
       .id("orca-project-new-group")
-      .w_full()
+      .size_full()
       .bg(t.popover)
       .p(16)
       .gap(10)
       .text_size(13)
       .track_focus(this.handle)
-      .on_key_down((e) => {
-        if (e.key === "escape") this.close();
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") {
+          cx.stop_propagation();
+          this.close();
+        }
       })
       .child(div().font_semibold().text_size(14).text_color(t.foreground).child("New Project Group"))
       .child(div().text_size(12).text_color(t.muted).child("Create a group and move this project into it."))
@@ -1126,11 +1161,22 @@ export default class OrcaProject extends View {
         v_flex()
           .gap(4)
           .child(div().text_size(12).text_color(t.muted).child("Group Name"))
-          .child(Input.new(this.groupInput))
+          .child(
+            Input.new(this.groupInput)
+              .h(30)
+              .px(10)
+              .items_center()
+              .rounded(6)
+              .border(1)
+              .border_color(t.accent)
+              .bg(t.background)
+              .text_color(t.foreground)
+          )
       )
       .when(Boolean(this.localError), (el) =>
         el.child(div().text_size(11.5).text_color(t.blocked).child(this.localError))
       )
+      .child(div().flex_1())
       .child(
         h_flex()
           .justify_end()

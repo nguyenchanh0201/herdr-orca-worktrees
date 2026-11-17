@@ -204,7 +204,7 @@ test('header right-click opens expanded popup with the display name', async () =
   await h.flush();
   const tree = h.view.renderHeader({ kind: 'repo', key: 'r', primary: '/repo', saved: true, displayName: 'Admin Portal', rows: [] }, false, {});
   tree.attrs.on_mouse_down[1]({}, h.cx);
-  assert.deepEqual(h.state.overlays, [{ open: { mod: 'orca-project', kind: 'popup', width: 220, height: 150, props: { mode: 'header', path: '/repo', saved: true, name: 'Admin Portal', group: null, groups: [] } } }]);
+  assert.deepEqual(h.state.overlays, [{ open: { mod: 'orca-project', kind: 'popup', width: 220, height: 175, props: { mode: 'header', path: '/repo', saved: true, name: 'Admin Portal', group: null, groups: [] } } }]);
 });
 
 // Catches actions on unsaved groups, missing/reordered rows, or incorrect dialog contracts.
@@ -717,6 +717,33 @@ test('group popup notifies on set-group error without refreshing', async () => {
   assert.equal(h.state.notifications[0].level, 'error');
   assert.equal(h.state.notifications[0].body, 'Not a git repository');
   assert.equal(h.state.shared.has('orca.projects.rev'), false);
+});
+
+test('subRow captures bounds on mouse_move, Escape in side popup closes parent, and non-subRow hover closes side popup', async () => {
+  const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin' });
+  const tree = h.view.render();
+  const openInRow = nodes(tree).find((n) => n.attrs.id === 'open-in');
+  openInRow.attrs.on_mouse_move({ bounds: { x: 10, y: 20, width: 180, height: 31 } }, h.cx);
+  assert.equal(h.state.overlays.length, 1);
+  assert.deepEqual(h.state.overlays[0].open.at, { x: 194, y: 20 });
+
+  h.view.sideOverlayId = 'side-1';
+  const renameRow = nodes(tree).find((n) => n.attrs.id === 'rename-project');
+  renameRow.attrs.on_hover(true, h.cx);
+  assert.deepEqual(h.state.overlays.slice(1), [{ close: 'side-1' }]);
+
+  const sub = await harness(undefined, { overlay: 'sub', mode: 'open-in', folder: '/r', parent: 'menu' });
+  await sub.flush();
+  sub.view.render().attrs.on_key_down({ key: 'escape' }, sub.cx);
+  assert.deepEqual(sub.state.overlays, [{ close: 'sub' }, { close: 'menu' }]);
+});
+
+test('new-group Input is styled and dialog height fits inline error', async () => {
+  const h = await harness(undefined, { overlay: 'dlg', mode: 'new-group', path: '/r', name: 'App', groups: ['App group'] });
+  const tree = h.view.render();
+  const inputNode = nodes(tree).find((n) => n.kind === 'Input');
+  assert.equal(inputNode?.attrs.h, 30);
+  assert.equal(inputNode?.attrs.border, 1);
 });
 
 test('worktree cards are indented; only the selected one shows its border', async () => {

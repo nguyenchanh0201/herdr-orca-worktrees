@@ -352,7 +352,7 @@ export function agentSummary(agents = [], max = 5) {
 }
 
 /** Partition groups into named sections (first-appearance order) followed by ungrouped projects. */
-export function projectGroups(groups = [], sort = "added") {
+export function projectGroups(groups = [], sort = "added", savedOrder = null) {
   if (!Array.isArray(groups)) return [];
   const byKey = new Map();
   const ungrouped = [];
@@ -379,6 +379,16 @@ export function projectGroups(groups = [], sort = "added") {
     for (const sec of sections) {
       sec.projects.sort((a, b) => cmp(a.displayName ?? a.name, b.displayName ?? b.name));
     }
+  } else if (savedOrder instanceof Map && savedOrder.size > 0) {
+    const orderOf = (sec) => {
+      let min = Infinity;
+      for (const p of sec.projects) {
+        const idx = savedOrder.get(p?.key);
+        if (typeof idx === "number" && idx < min) min = idx;
+      }
+      return min;
+    };
+    sections.sort((a, b) => orderOf(a) - orderOf(b));
   }
 
   const sortedUngrouped = sortGroups(ungrouped, sort);

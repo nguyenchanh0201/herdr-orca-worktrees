@@ -703,3 +703,15 @@ test("group carries saved group onto repo group", () => {
   assert.equal(groups[0].group, "CTM group");
   assert.equal(groups[1].group, null);
 });
+
+test("projectGroups orders named sections by savedOrder when sort is added", () => {
+  const s = g.projectGroups(
+    [G("/b", "Beta"), G("/a", "Alpha")],
+    "added",
+    new Map([["/a", 0], ["/b", 1]])
+  );
+  assert.deepEqual(
+    s.map((x) => x.name),
+    ["Alpha", "Beta"]
+  );
+});
