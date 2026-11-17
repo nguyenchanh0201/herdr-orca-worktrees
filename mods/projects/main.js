@@ -1206,6 +1206,7 @@ export default class Projects extends View {
             mode: "space",
             space: space ? space.id : null,
             worktree,
+            folder: worktree,
             sleeping,
             hasAgents,
           },

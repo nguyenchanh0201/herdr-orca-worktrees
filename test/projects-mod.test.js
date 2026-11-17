@@ -20,7 +20,7 @@ function element(kind, path) {
 }
 
 async function harness(respond = () => ({}), overlayProps = null) {
-  const state = { shared: new Map(), calls: [], runs: [], storageSets: [], scrolls: [], spaces: [], agents: [], checking: false, notices: 0, overlays: [], inputs: [] };
+  const state = { shared: new Map(), calls: [], runs: [], storageSets: [], scrolls: [], spaces: [], agents: [], checking: false, notices: 0, notifications: [], overlays: [], inputs: [] };
   const pending = [];
   const cx = { notify() { state.notices++; }, stop_propagation() {}, focus_handle: () => ({ focus() {} }), spawn(fn) { pending.push(Promise.resolve().then(() => fn(cx))); }, timer: { every() {} } };
   const context = {
@@ -35,7 +35,7 @@ async function harness(respond = () => ({}), overlayProps = null) {
     spaces: () => state.spaces, panes: () => [], agents: () => state.agents, machines: () => [{ name: null, layout: 'ready' }],
     checking: () => state.checking, layout: () => null, knownAgents: async () => [],
     run(cmd, args) { state.runs.push({ cmd, args }); }, openOverlay(spec) { state.overlays.push({ open: JSON.parse(JSON.stringify(spec)) }); }, closeOverlay(id) { state.overlays.push({ close: id }); },
-    props: () => overlayProps, notify() {}, setAgentOrder() {}, pickFolder: async () => '/new',
+    props: () => overlayProps, notify(n) { state.notifications.push(n); }, setAgentOrder() {}, pickFolder: async () => '/new',
     InputState: { new(options = {}) {
       const input = { options, text: options.value ?? '', handlers: {}, value() { return this.text; }, set_value(v) { this.text = v; }, on(event, fn) { this.handlers[event] = fn; }, focus() { this.focused = true; } };
       state.inputs.push(input);
@@ -212,13 +212,13 @@ test('saved header menu closes before opening rename/icon dialogs; unsaved only 
   for (const [label, mode, height, extra] of [['Rename…', 'rename', 160, { name: 'Admin Portal' }], ['Change icon…', 'icon', 260, {}]]) {
     const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin Portal' });
     const tree = h.view.render();
-    assert.deepEqual(texts(tree), ['Rename…', 'Change icon…', 'Remove from sidebar']);
+    assert.deepEqual(texts(tree), ['Open in', '›', 'Rename…', 'Change icon…', 'Remove from sidebar']);
     nodes(tree).find(n => n.attrs.on_click && texts(n).includes(label)).attrs.on_click({}, h.cx);
     assert.deepEqual(h.state.overlays, [{ close: 'menu' }, { open: { mod: 'orca-project', kind: 'dialog', width: 420, height, props: { mode, path: '/repo', ...extra } } }]);
   }
   const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: false, path: '/repo' });
-  assert.deepEqual(texts(h.view.render()), ['Not saved — it shows while its spaces are open']);
-  assert.equal(nodes(h.view.render()).filter(n => n.attrs.on_click).length, 0);
+  assert.deepEqual(texts(h.view.render()), ['Open in', '›', 'Not saved — it shows while its spaces are open']);
+  assert.equal(nodes(h.view.render()).filter(n => n.attrs.on_click).length, 1);
 });
 
 // Catches lost prefill/retention, missing submit binding, empty-name rejection, or absent refresh/close.
@@ -535,6 +535,83 @@ test('ungrouped projects render as before', async () => {
   const h = await cardHarness();
   const tree = h.view.render();
   assert.ok(!nodes(tree).some((n) => typeof n.attrs.id === 'string' && n.attrs.id.startsWith('group-head-')));
+});
+
+test('header and space menus show Open in ›', async () => {
+  for (const props of [
+    { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin' },
+    { overlay: 'menu', mode: 'space', space: 's1', worktree: '/wt', folder: '/wt', sleeping: false, hasAgents: false },
+  ]) {
+    const h = await harness(undefined, props);
+    const t = texts(h.view.render());
+    assert.ok(t.includes('Open in'));
+    assert.ok(t.includes('›'));
+  }
+});
+
+test('open-in lists chosen apps then Customize apps…', async () => {
+  const h = await harness(
+    (args) => args[0] === 'apps' && args[1] === 'list'
+      ? { installed: [{ id: 'vscode', name: 'VS Code' }, { id: 'zed', name: 'Zed' }, { id: 'finder', name: 'Finder' }], chosen: ['zed', 'finder'] }
+      : {},
+    { overlay: 'sub', mode: 'open-in', folder: '/r', parent: 'menu' }
+  );
+  await h.flush();
+  const t = texts(h.view.render());
+  assert.deepEqual(t, ['Zed', 'Finder', 'Customize apps…']);
+  assert.ok(!t.includes('VS Code'));
+});
+
+test('clicking an app opens the folder and closes both popups', async () => {
+  const h = await harness(
+    (args) => args[0] === 'apps' && args[1] === 'list'
+      ? { installed: [{ id: 'zed', name: 'Zed' }, { id: 'finder', name: 'Finder' }], chosen: ['zed', 'finder'] }
+      : { ok: true },
+    { overlay: 'sub', mode: 'open-in', folder: '/r', parent: 'menu' }
+  );
+  await h.flush();
+  const tree = h.view.render();
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Zed')).attrs.on_click({}, h.cx);
+  await h.flush();
+  assert.deepEqual(Array.from(h.state.calls.at(-1).args), ['open', 'zed', '/r']);
+  assert.deepEqual(h.state.overlays, [{ close: 'sub' }, { close: 'menu' }]);
+});
+
+test('open failure notifies', async () => {
+  const h = await harness(
+    (args) => {
+      if (args[0] === 'apps' && args[1] === 'list') {
+        return { installed: [{ id: 'zed', name: 'Zed' }], chosen: ['zed'] };
+      }
+      if (args[0] === 'open') return { error: 'boom' };
+      return {};
+    },
+    { overlay: 'sub', mode: 'open-in', folder: '/r', parent: 'menu' }
+  );
+  await h.flush();
+  const tree = h.view.render();
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Zed')).attrs.on_click({}, h.cx);
+  await h.flush();
+  assert.equal(h.state.notifications.length, 1);
+  assert.equal(h.state.notifications[0].level, 'error');
+  assert.equal(h.state.notifications[0].body, 'boom');
+});
+
+test('Customize apps saves the checked ids', async () => {
+  const h = await harness(
+    (args) => args[0] === 'apps' && args[1] === 'list'
+      ? { installed: [{ id: 'zed', name: 'Zed' }, { id: 'finder', name: 'Finder' }], chosen: ['zed', 'finder'] }
+      : { ok: true },
+    { overlay: 'dlg', mode: 'apps' }
+  );
+  await h.flush();
+  let tree = h.view.render();
+  nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Zed')).attrs.on_click({}, h.cx);
+  tree = h.view.render();
+  await nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Save')).attrs.on_click({}, h.cx);
+  await h.flush();
+  assert.deepEqual(Array.from(h.state.calls.at(-1).args), ['apps', 'set', 'finder']);
+  assert.deepEqual(h.state.overlays, [{ close: 'dlg' }]);
 });
 
 test('worktree cards are indented; only the selected one shows its border', async () => {
