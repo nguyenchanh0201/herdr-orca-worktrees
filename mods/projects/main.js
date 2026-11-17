@@ -2,7 +2,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared, pickFolder, notify, home, appHome, readTextFile, knownAgents } from "herdr";
 import { placeOf, group, visibleRows, label, letterOf, colorIndex, agentsBySpace, sinceUpdate, elapsed, activitySort, attentionCount, sortGroups, hideMainRows, topStatus, agentSummary, STATUS_GLYPH } from "./group.js";
-import { QUIT, agentKind, parseResume, fallbackResume, keptFlags, fullAccessFlags, atPrompt, withFlags, resumeArgv, stripAnsi, isShellArgv, agentExited } from "./sleep.js";
+import { quitArgv, agentKind, parseResume, fallbackResume, keptFlags, fullAccessFlags, atPrompt, withFlags, resumeArgv, stripAnsi, isShellArgv, agentExited } from "./sleep.js";
 
 // Agents our tools start get full access: the flag goes right after the program word.
 function fullAccessArgv(run) {
@@ -308,15 +308,16 @@ export default class Projects extends View {
             return { ok: false, name, reason: "is still busy — try again when it stops" };
           }
           // No --if: hc refuses "done" (finished, unseen) for --if idle, and plain send already waits on a typed draft.
-          let sendOk = false;
+          let sent = null;
           try {
-            const sr = await exec("hc", ["send", t, QUIT[kind]], { timeout: 5000 });
-            sendOk = sr.code === 0;
-          } catch {
-            sendOk = false;
-          }
-          if (!sendOk) {
+            const sr = await exec("hc", quitArgv(kind, t), { timeout: 5000 });
+            if (sr.code === 0) sent = JSON.parse(sr.stdout || "{}").started !== false;
+          } catch {}
+          if (sent === null) {
             return { ok: false, name, reason: "has unsent text — clear it and sleep again" };
+          }
+          if (!sent) {
+            return { ok: false, name, reason: "is showing a prompt — answer it and sleep again" };
           }
 
           const exitDeadline = Date.now() + 20000;
