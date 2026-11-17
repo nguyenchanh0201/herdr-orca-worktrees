@@ -375,6 +375,7 @@ test("saved-only group after space groups", () => {
     name: "s",
     displayName: "s",
     icon: null,
+    group: null,
     kind: "repo",
     primary: "/s",
     primarySpace: null,
@@ -420,6 +421,7 @@ test("missing saved keeps header", () => {
     name: "gone",
     displayName: "gone",
     icon: null,
+    group: null,
     kind: "repo",
     primary: "/gone",
     primarySpace: null,
@@ -659,4 +661,45 @@ test("agentSummary caps icons at 5", () => {
 
 test("STATUS_GLYPH", () => {
   assert.deepEqual({ ...g.STATUS_GLYPH }, { blocked: "!", working: "●", done: "✓", idle: "○" });
+});
+
+const G = (name, group, kind = "repo") => ({ kind, key: name, name, displayName: name, group, rows: [] });
+
+test("projectGroups puts named groups first in first-appearance order", () => {
+  const s = g.projectGroups([G("a", null), G("b", "CTM"), G("c", "Zed"), G("d", " ctm "), G("other", null, "other")]);
+  assert.deepEqual(
+    s.map((x) => [x.name, x.key, x.projects.map((p) => p.name)]),
+    [
+      ["CTM", "group:ctm", ["b", "d"]],
+      ["Zed", "group:zed", ["c"]],
+      [null, null, ["a", "other"]],
+    ]
+  );
+});
+
+test("projectGroups name sort orders groups and their projects", () => {
+  const s = g.projectGroups([G("y", "Zed"), G("x", "Zed"), G("b", "Alpha"), G("a", null)], "name");
+  assert.deepEqual(
+    s.map((x) => [x.name, x.projects.map((p) => p.name)]),
+    [
+      ["Alpha", ["b"]],
+      ["Zed", ["x", "y"]],
+      [null, ["a"]],
+    ]
+  );
+});
+
+test("projectGroups with no groups is one unnamed section", () => {
+  assert.deepEqual(g.projectGroups([G("a", null)]).map((x) => x.name), [null]);
+});
+
+test("group carries saved group onto repo group", () => {
+  const groups = g.group([], (s) => s.folder, () => null, {
+    saved: [
+      { path: "/a", exists: true, name: "A", icon: null, group: "CTM group" },
+      { path: "/b", exists: true, name: "B", icon: null, group: null },
+    ],
+  });
+  assert.equal(groups[0].group, "CTM group");
+  assert.equal(groups[1].group, null);
 });

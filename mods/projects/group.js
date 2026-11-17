@@ -215,6 +215,7 @@ export function group(spaces = [], placeOf = (s) => s?.folder ?? "", repoOf = ()
     const saved = savedByPath.get(g.key);
     g.displayName = saved?.name || g.name;
     g.icon = saved?.icon ?? null;
+    g.group = typeof saved?.group === "string" && saved.group.trim() ? saved.group.trim() : null;
   }
 
   if (sleeping) {
@@ -348,4 +349,41 @@ export function agentSummary(agents = [], max = 5) {
     icons: list.slice(0, max),
     more: Math.max(0, list.length - max),
   };
+}
+
+/** Partition groups into named sections (first-appearance order) followed by ungrouped projects. */
+export function projectGroups(groups = [], sort = "added") {
+  if (!Array.isArray(groups)) return [];
+  const byKey = new Map();
+  const ungrouped = [];
+
+  for (const g of groups) {
+    const raw = g?.kind === "repo" && typeof g.group === "string" ? g.group.trim() : "";
+    if (!raw) {
+      ungrouped.push(g);
+      continue;
+    }
+    const key = "group:" + raw.toLowerCase();
+    let sec = byKey.get(key);
+    if (!sec) {
+      sec = { name: raw, key, projects: [] };
+      byKey.set(key, sec);
+    }
+    sec.projects.push(g);
+  }
+
+  const sections = [...byKey.values()];
+  if (sort === "name") {
+    const cmp = (a, b) => String(a ?? "").localeCompare(String(b ?? ""), undefined, { sensitivity: "base" });
+    sections.sort((a, b) => cmp(a.name, b.name));
+    for (const sec of sections) {
+      sec.projects.sort((a, b) => cmp(a.displayName ?? a.name, b.displayName ?? b.name));
+    }
+  }
+
+  const sortedUngrouped = sortGroups(ungrouped, sort);
+  if (sortedUngrouped.length > 0 || sections.length === 0) {
+    sections.push({ name: null, key: null, projects: sortedUngrouped });
+  }
+  return sections;
 }
