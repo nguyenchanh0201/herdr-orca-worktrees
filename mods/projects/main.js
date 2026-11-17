@@ -1,7 +1,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared, pickFolder, notify, home, appHome, readTextFile } from "herdr";
-import { placeOf, group, visibleRows, label, agentsBySpace, sinceUpdate, elapsed } from "./group.js";
+import { placeOf, group, visibleRows, label, agentsBySpace, sinceUpdate, elapsed, activitySort, attentionCount, sortGroups, hideMainRows } from "./group.js";
 import { findNode, sidebarStep } from "./sidebar.js";
 import config from "./config.js";
 
@@ -37,6 +37,24 @@ export default class Projects extends View {
       const raw = localStorage.getItem("projects.collapsed");
       if (raw) this.collapsed = new Set(JSON.parse(raw));
     } catch {}
+    this.view = "projects";
+    try {
+      const v = localStorage.getItem("projects.view");
+      if (v === "activity" || v === "projects") this.view = v;
+    } catch {}
+    this.options = { sort: "added", hideMain: false };
+    try {
+      const raw = localStorage.getItem("projects.options");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        this.options = {
+          sort: parsed?.sort === "name" ? "name" : "added",
+          hideMain: Boolean(parsed?.hideMain),
+        };
+      }
+    } catch {}
+    this.lastOptionsAt = null;
+    this.groupKeys = [];
     this.scroll = ScrollHandle.new();
     this.lastActive = null;
     this.since = new Map();
@@ -50,6 +68,7 @@ export default class Projects extends View {
 
     if (checking()) return;
 
+    setShared("orca.projects.options", this.options);
     this.loadSaved(cx);
     cx.timer.every(500, (cx) => this.check(cx));
     this.check(cx);
@@ -102,6 +121,32 @@ export default class Projects extends View {
     if (rev !== undefined && rev !== this.rev) {
       this.rev = rev;
       this.loadSaved(cx);
+    }
+
+    const opts = shared("orca.projects.options");
+    if (opts && typeof opts === "object") {
+      const nextSort = opts.sort === "name" ? "name" : "added";
+      const nextHideMain = Boolean(opts.hideMain);
+      const optsAt = opts.at ?? null;
+      const changed =
+        optsAt !== this.lastOptionsAt ||
+        nextSort !== this.options.sort ||
+        nextHideMain !== this.options.hideMain;
+      if (changed) {
+        this.lastOptionsAt = optsAt;
+        if (opts.collapse === "all") {
+          for (const k of this.groupKeys) this.collapsed.add(k);
+          this.saveCollapsed();
+        } else if (opts.collapse === "none") {
+          this.collapsed.clear();
+          this.saveCollapsed();
+        }
+        this.options = { sort: nextSort, hideMain: nextHideMain };
+        try {
+          localStorage.setItem("projects.options", JSON.stringify(this.options));
+        } catch {}
+        cx.notify();
+      }
     }
 
     const q = shared("orca.projects.request");
@@ -289,6 +334,139 @@ export default class Projects extends View {
     }
   }
 
+  saveCollapsed() {
+    try {
+      localStorage.setItem("projects.collapsed", JSON.stringify([...this.collapsed]));
+    } catch {}
+  }
+
+  renderTopHeader(targetRepo, t) {
+    const anyOpen = this.groupKeys.some((k) => !this.collapsed.has(k));
+    const attn = attentionCount(agents());
+
+    const iconBtn = (id, active = false, disabled = false) =>
+      h_flex()
+        .id(id)
+        .size(26)
+        .items_center()
+        .justify_center()
+        .rounded(6)
+        .flex_none()
+        .when(active, (el) => el.bg(t.selected).text_color(t.foreground))
+        .when(!active && !disabled, (el) =>
+          el.text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+        )
+        .when(!active && disabled, (el) => el.text_color(t.dim))
+        .when(active, (el) => el.cursor_pointer());
+
+    const bellBtn = iconBtn("projects-view-bell", this.view === "activity")
+      .relative()
+      .on_click((_e, cx) => {
+        this.view = this.view === "activity" ? "projects" : "activity";
+        try {
+          localStorage.setItem("projects.view", this.view);
+        } catch {}
+        cx.notify();
+      })
+      .child(svg("mods/projects/bell.svg").size(14))
+      .when(attn > 0, (el) =>
+        el.child(
+          div()
+            .absolute()
+            .top(1)
+            .right(1)
+            .px(3)
+            .rounded(6)
+            .bg(t.blocked)
+            .text_color(t.background)
+            .text_size(9)
+            .font_bold()
+            .child(String(attn))
+        )
+      );
+
+    const optionsBtn = iconBtn("projects-options-btn")
+      .on_click(() =>
+        openOverlay({
+          mod: "orca-project",
+          kind: "popup",
+          width: 240,
+          height: 260,
+          props: { mode: "options" },
+        })
+      )
+      .child(svg("mods/projects/sliders.svg").size(14));
+
+    const addProjectBtn = iconBtn("projects-add-btn")
+      .on_click(() =>
+        openOverlay({
+          mod: "orca-project",
+          kind: "popup",
+          width: 220,
+          height: 90,
+          props: { mode: "add" },
+        })
+      )
+      .child(svg("mods/workspace-chrome/folder-plus.svg").size(14));
+
+    const newWorktreeBtn = iconBtn("projects-new-worktree-btn", false, !targetRepo)
+      .when(Boolean(targetRepo), (el) =>
+        el.on_click(() =>
+          openOverlay({
+            mod: "orca-worktree",
+            kind: "dialog",
+            width: 560,
+            height: 420,
+            props: { repo: targetRepo },
+          })
+        )
+      )
+      .child(svg("mods/workspace-chrome/plus.svg").size(14));
+
+    return h_flex()
+      .id("projects-top-header")
+      .h(32)
+      .px(10)
+      .gap(4)
+      .items_center()
+      .flex_none()
+      .child(
+        div()
+          .text_size(12)
+          .font_semibold()
+          .text_color(t.muted)
+          .child(this.view === "activity" ? "Activity" : "Projects")
+      )
+      .child(
+        h_flex()
+          .id("projects-collapse-all")
+          .size(20)
+          .items_center()
+          .justify_center()
+          .rounded(4)
+          .text_color(t.muted)
+          .cursor_pointer()
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_click((_e, cx) => {
+            if (anyOpen) {
+              for (const k of this.groupKeys) this.collapsed.add(k);
+            } else {
+              this.collapsed.clear();
+            }
+            this.saveCollapsed();
+            cx.notify();
+          })
+          .child(
+            svg(anyOpen ? "mods/workspace-chrome/chevron-down.svg" : "mods/workspace-chrome/chevron-right.svg").size(12)
+          )
+      )
+      .child(div().flex_1())
+      .child(bellBtn)
+      .child(optionsBtn)
+      .child(addProjectBtn)
+      .child(newWorktreeBtn);
+  }
+
   render() {
     const t = theme();
     if ((findNode(layout(), "sidebar")?.size?.px ?? Infinity) < 160) {
@@ -301,28 +479,7 @@ export default class Projects extends View {
     const ready = localMachine?.layout === "ready";
     const loading = !ready || (Date.now() - this.startedAt < 3000 && this.inflight.size + this.queue.length > 0);
 
-    const addRow = h_flex()
-      .id("add-project-btn")
-      .h(28)
-      .px(12)
-      .gap(6)
-      .items_center()
-      .flex_none()
-      .text_color(t.muted)
-      .cursor_pointer()
-      .hover((s) => s.bg(t.hover).text_color(t.foreground))
-      .on_click(() =>
-        openOverlay({
-          mod: "orca-project",
-          kind: "popup",
-          width: 220,
-          height: 90,
-          props: { mode: "add" },
-        })
-      )
-      .child("+")
-      .child("Add project");
-
+    let targetRepo = null;
     let body;
     if (loading) {
       body = v_flex().flex_1().min_h(0).items_center().justify_center()
@@ -358,7 +515,29 @@ export default class Projects extends View {
         }
       }
 
-      if (groups.length === 0 && sps.length === 0) {
+      const activeRepoGroup =
+        groups.find((g) => g.kind === "repo" && g.rows.some((r) => r.space?.active)) ??
+        groups.find((g) => g.kind === "repo");
+      targetRepo = activeRepoGroup?.primary ?? null;
+      this.groupKeys = groups.map((g) => g.key);
+
+      if (this.view === "activity") {
+        const now = Date.now();
+        const sorted = activitySort(agents(), this.since);
+        const spaceById = new Map(sps.map((s) => [s.id, s]));
+        setAgentOrder(sorted.map((a) => a.address));
+        if (sorted.length === 0) {
+          body = v_flex().flex_1().min_h(0).items_center().justify_center()
+            .child(div().text_color(t.muted).child("No agents"));
+        } else {
+          const children = sorted.map((a) => {
+            const sp = spaceById.get(a.space);
+            return this.renderActivityAgent(a, sp ? label(sp) : "", t, now);
+          });
+          body = v_flex().flex_1().min_h(0).px(8).overflow_y_scrollbar().track_scroll(this.scroll)
+            .children(children);
+        }
+      } else if (groups.length === 0 && sps.length === 0) {
         body = v_flex().flex_1().min_h(0).items_center().justify_center()
           .child(div().text_color(t.muted).child("No spaces"));
       } else {
@@ -370,7 +549,12 @@ export default class Projects extends View {
         const activeSpace = sps.find((s) => s.active);
         const activeId = activeSpace ? activeSpace.id : null;
 
-        for (const g of groups) {
+        let displayGroups = sortGroups(groups, this.options.sort);
+        if (this.options.hideMain) {
+          displayGroups = hideMainRows(displayGroups);
+        }
+
+        for (const g of displayGroups) {
           const isCollapsed = this.collapsed.has(g.key);
           children.push(this.renderHeader(g, isCollapsed, t));
           const rows = visibleRows(g, isCollapsed);
@@ -401,8 +585,8 @@ export default class Projects extends View {
     }
 
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
-      .child(body)
-      .child(addRow);
+      .child(this.renderTopHeader(targetRepo, t))
+      .child(body);
   }
 
   renderHeader(g, isCollapsed, t) {
@@ -511,12 +695,15 @@ export default class Projects extends View {
     return rowEl;
   }
 
-  renderAgent(a, t, now) {
-    const icon = !a.program?.icon
+  agentIcon(a, t) {
+    return !a.program?.icon
       ? svg("icons/agent.svg").size(13).flex_none().text_color(t.foreground)
       : a.program.tint
         ? svg(a.program.icon).size(13).flex_none().text_color(t.foreground)
         : image(a.program.icon).size(13).flex_none();
+  }
+
+  renderAgent(a, t, now) {
     const dur = elapsed(now - (this.since.get(a.address)?.at ?? now));
 
     return h_flex()
@@ -530,9 +717,35 @@ export default class Projects extends View {
       .cursor_pointer()
       .hover((s) => s.bg(t.hover))
       .on_click(() => run("pane.focus", { pane: a.pane }))
-      .child(icon)
+      .child(this.agentIcon(a, t))
       .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(a.program?.name ?? a.app ?? ""))
       .child(div().flex_none().text_color(t[a.status] ?? t.unknown).child(a.status ?? ""))
       .when(Boolean(dur), (el) => el.child(div().flex_none().text_color(t.dim).child(dur)));
+  }
+
+  renderActivityAgent(a, spaceLabel, t, now) {
+    const dur = elapsed(now - (this.since.get(a.address)?.at ?? now));
+
+    return v_flex()
+      .id(`activity-agent-${a.address}`)
+      .px(8)
+      .py(5)
+      .gap(2)
+      .rounded(6)
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover))
+      .on_click(() => run("pane.focus", { pane: a.pane }))
+      .child(
+        h_flex()
+          .gap(8)
+          .items_center()
+          .child(this.agentIcon(a, t))
+          .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(a.program?.name ?? a.app ?? ""))
+          .child(div().flex_none().text_color(t[a.status] ?? t.unknown).child(a.status ?? ""))
+          .when(Boolean(dur), (el) => el.child(div().flex_none().text_color(t.dim).child(dur)))
+      )
+      .when(Boolean(spaceLabel), (el) =>
+        el.child(div().pl(21).truncate().text_size(11).text_color(t.dim).child(spaceLabel))
+      );
   }
 }

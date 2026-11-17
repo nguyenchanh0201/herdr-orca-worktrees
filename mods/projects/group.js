@@ -210,3 +210,48 @@ export function elapsed(ms) {
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
   return `${Math.floor(ms / 3_600_000)}h`;
 }
+
+const ACTIVITY_RANK = { blocked: 0, done: 1, working: 2, idle: 3 };
+
+/** Sort agents by attention priority, then newest status-change timestamp first. */
+export function activitySort(agents = [], sinceMap) {
+  if (!Array.isArray(agents)) return [];
+  const rank = (s) => ACTIVITY_RANK[s] ?? 4;
+  const sinceAt = (a) => sinceMap?.get(a?.address)?.at ?? 0;
+  return [...agents].sort((a, b) => rank(a?.status) - rank(b?.status) || sinceAt(b) - sinceAt(a));
+}
+
+/** Count agents currently needing attention (`blocked` or `done`). */
+export function attentionCount(agents = []) {
+  if (!Array.isArray(agents)) return 0;
+  let n = 0;
+  for (const a of agents) {
+    if (a?.status === "blocked" || a?.status === "done") n++;
+  }
+  return n;
+}
+
+/** Sort project groups by `"added"` (input order) or `"name"` (repos alphabetically, machines, then other). */
+export function sortGroups(groups = [], sort = "added") {
+  if (!Array.isArray(groups)) return [];
+  if (sort !== "name") return [...groups];
+  const repos = [];
+  const machines = [];
+  const others = [];
+  for (const g of groups) {
+    if (g?.kind === "repo") repos.push(g);
+    else if (g?.kind === "machine") machines.push(g);
+    else others.push(g);
+  }
+  repos.sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? ""), undefined, { sensitivity: "base" }));
+  return [...repos, ...machines, ...others];
+}
+
+/** Return copies of groups with main checkout rows removed, preserving all group headers. */
+export function hideMainRows(groups = []) {
+  if (!Array.isArray(groups)) return [];
+  return groups.map((g) => ({
+    ...g,
+    rows: Array.isArray(g.rows) ? g.rows.filter((r) => !r.main) : [],
+  }));
+}

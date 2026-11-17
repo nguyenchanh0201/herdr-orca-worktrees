@@ -243,6 +243,87 @@ export default class OrcaProject extends View {
       );
   }
 
+  renderOptions(t) {
+    const cur = shared("orca.projects.options") ?? {};
+    const divider = () => div().h(1).my(4).mx(6).bg(t.border);
+    const checkRow = (id, label, checked, onClick) =>
+      h_flex()
+        .id(id)
+        .h(31)
+        .px(9)
+        .rounded(7)
+        .items_center()
+        .flex_none()
+        .cursor_pointer()
+        .text_color(t.foreground)
+        .hover((s) => s.bg(t.selected))
+        .on_click(onClick)
+        .child(div().flex_1().child(label))
+        .child(div().w(16).flex_none().text_color(t.accent).child(checked ? "✓" : ""));
+
+    return v_flex()
+      .id("orca-project-options")
+      .w_full()
+      .bg(t.popover)
+      .p(5)
+      .text_size(12.8)
+      .track_focus(this.handle)
+      .on_key_down((e) => {
+        if (e.key === "escape") this.close();
+      })
+      .child(
+        this.popupRow(
+          "collapse-all-projects",
+          "Collapse all projects",
+          () => {
+            setShared("orca.projects.options", { ...cur, collapse: "all", at: Date.now() });
+            this.close();
+          },
+          t
+        )
+      )
+      .child(
+        this.popupRow(
+          "expand-all-projects",
+          "Expand all projects",
+          () => {
+            setShared("orca.projects.options", { ...cur, collapse: "none", at: Date.now() });
+            this.close();
+          },
+          t
+        )
+      )
+      .child(divider())
+      .child(
+        div()
+          .px(9)
+          .py(4)
+          .text_size(11)
+          .font_semibold()
+          .text_color(t.muted)
+          .child("Sort projects")
+      )
+      .child(
+        checkRow("sort-added", "Order added", cur.sort !== "name", (_e, cx) => {
+          setShared("orca.projects.options", { sort: "added", hideMain: Boolean(cur.hideMain), at: Date.now() });
+          cx.notify();
+        })
+      )
+      .child(
+        checkRow("sort-name", "Name", cur.sort === "name", (_e, cx) => {
+          setShared("orca.projects.options", { sort: "name", hideMain: Boolean(cur.hideMain), at: Date.now() });
+          cx.notify();
+        })
+      )
+      .child(divider())
+      .child(
+        checkRow("hide-main", "Hide main checkouts", Boolean(cur.hideMain), (_e, cx) => {
+          setShared("orca.projects.options", { sort: cur.sort ?? "added", hideMain: !cur.hideMain, at: Date.now() });
+          cx.notify();
+        })
+      );
+  }
+
   renderClone(t) {
     const clone = this.reqId ? shared("orca.projects.clone") : null;
     const activeClone = clone?.id === this.reqId ? clone : null;
@@ -374,6 +455,7 @@ export default class OrcaProject extends View {
     const t = theme();
     if (this.mode === "clone") return this.renderClone(t);
     if (this.mode === "header") return this.renderHeader(t);
+    if (this.mode === "options") return this.renderOptions(t);
     return this.renderAdd(t);
   }
 }

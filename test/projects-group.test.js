@@ -355,3 +355,89 @@ test("missing saved keeps header", () => {
     exists: false,
   });
 });
+
+test("activitySort orders by status priority then newest since timestamp", () => {
+  const agents = [
+    { address: "i1", status: "idle" },
+    { address: "w1", status: "working" },
+    { address: "d1", status: "done" },
+    { address: "b1", status: "blocked" },
+    { address: "b2", status: "blocked" },
+    { address: "u1", status: "unknown" },
+  ];
+  const since = new Map([
+    ["b1", { status: "blocked", at: 100 }],
+    ["b2", { status: "blocked", at: 300 }],
+    ["d1", { status: "done", at: 50 }],
+    ["w1", { status: "working", at: 200 }],
+    ["i1", { status: "idle", at: 400 }],
+    ["u1", { status: "unknown", at: 500 }],
+  ]);
+
+  const sorted = g.activitySort(agents, since);
+  assert.deepEqual(
+    sorted.map((a) => a.address),
+    ["b2", "b1", "d1", "w1", "i1", "u1"]
+  );
+  // Does not mutate original array
+  assert.equal(agents[0].address, "i1");
+});
+
+test("attentionCount counts blocked and done agents", () => {
+  assert.equal(g.attentionCount([]), 0);
+  assert.equal(
+    g.attentionCount([
+      { address: "a", status: "blocked" },
+      { address: "b", status: "working" },
+      { address: "c", status: "done" },
+      { address: "d", status: "idle" },
+      { address: "e", status: "blocked" },
+    ]),
+    3
+  );
+});
+
+test("sortGroups supports added and name", () => {
+  const groups = [
+    { key: "other", name: "Other", kind: "other", rows: [] },
+    { key: "/z", name: "Zebra", kind: "repo", rows: [] },
+    { key: "machine:vps", name: "vps", kind: "machine", rows: [] },
+    { key: "/a", name: "alpha", kind: "repo", rows: [] },
+    { key: "/b", name: "Beta", kind: "repo", rows: [] },
+  ];
+
+  const added = g.sortGroups(groups, "added");
+  assert.deepEqual(added.map((x) => x.key), ["other", "/z", "machine:vps", "/a", "/b"]);
+  assert.notEqual(added, groups);
+
+  const byName = g.sortGroups(groups, "name");
+  assert.deepEqual(byName.map((x) => x.key), ["/a", "/b", "/z", "machine:vps", "other"]);
+});
+
+test("hideMainRows filters out main rows while keeping all groups", () => {
+  const groups = [
+    {
+      key: "/r1",
+      name: "r1",
+      kind: "repo",
+      rows: [
+        { space: sp("m1"), main: true },
+        { space: sp("w1"), main: false },
+      ],
+    },
+    {
+      key: "/r2",
+      name: "r2",
+      kind: "repo",
+      rows: [{ space: sp("m2"), main: true }],
+    },
+  ];
+
+  const hidden = g.hideMainRows(groups);
+  assert.equal(hidden.length, 2);
+  assert.deepEqual(hidden[0].rows.map((r) => r.space.id), ["w1"]);
+  assert.deepEqual(hidden[1].rows, []);
+  // Does not mutate original groups
+  assert.equal(groups[0].rows.length, 2);
+  assert.equal(groups[1].rows.length, 1);
+});
