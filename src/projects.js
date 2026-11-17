@@ -5,6 +5,7 @@ const { spawnSync } = require("node:child_process");
 const { gitInfo } = require("./git-info");
 const YAML = require("yaml");
 const { createHash } = require("node:crypto");
+const { isDeepStrictEqual } = require("node:util");
 
 function herdrHome() {
   return process.env.HERDR_APP_HOME || path.join(os.homedir(), ".config", "herdr-app");
@@ -282,8 +283,14 @@ async function setIcon(targetPath, source, value, { fetchImpl = fetch } = {}) {
   const previous = entry.icon;
   try {
     icon = await iconFromSource(targetPath, source, value, fetchImpl);
-    entry.icon = icon;
-    writeProjectsAtomic(state.projects);
+    // Downloads can overlap user edits; reconcile immediately before the synchronous commit.
+    const latest = readProjectsFile();
+    if (latest.error) throw new Error(latest.error);
+    const current = latest.projects.find(p => p.path === targetPath);
+    if (!current) throw new Error("Project is not saved");
+    if (!isDeepStrictEqual(current.icon, previous)) throw new Error("Project icon changed while loading; try again");
+    current.icon = icon;
+    writeProjectsAtomic(latest.projects);
   } catch (error) {
     if (icon) removeManagedIcon(targetPath, icon);
     return { error: error.message || String(error) };
@@ -307,13 +314,26 @@ async function resolveIcons({ fetchImpl = fetch } = {}) {
         : owners[i] && counts.get(owners[i].toLowerCase()) === 1
           ? await iconFromSource(entry.path, "github", undefined, fetchImpl)
           : { source: "letter" };
-      entry.icon = icon;
       return { path: entry.path, icon };
     } catch { return null; /* Leave unresolved downloads retryable. */ }
   }));
   if (changes.some(Boolean)) {
-    try { writeProjectsAtomic(state.projects); }
-    catch (error) {
+    try {
+      const latest = readProjectsFile();
+      if (latest.error) throw new Error(latest.error);
+      let changed = false;
+      for (const change of changes) {
+        if (!change) continue;
+        const current = latest.projects.find(p => p.path === change.path);
+        if (!current || current.icon) {
+          removeManagedIcon(change.path, change.icon);
+          continue;
+        }
+        current.icon = change.icon;
+        changed = true;
+      }
+      if (changed) writeProjectsAtomic(latest.projects);
+    } catch (error) {
       for (const change of changes) if (change) removeManagedIcon(change.path, change.icon);
       return { error: error.message || String(error) };
     }

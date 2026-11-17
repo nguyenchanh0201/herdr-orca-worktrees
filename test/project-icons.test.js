@@ -6,7 +6,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const {
   herdrHome, ownerFromRemote, sniffImage, REPO_ICON_CANDIDATES,
-  listProjects, renameProject, githubLogins, resolveIcons, setIcon,
+  listProjects, renameProject, githubLogins, resolveIcons, setIcon, removeProject,
 } = require("../src/projects");
 
 const { makeRepo } = require("./helpers/repo");
@@ -58,6 +58,90 @@ function repo(t, owner, files = {}) {
 }
 function iconFile(icon) { return path.join(process.env.HERDR_APP_HOME, icon.file || icon); }
 function noFetch() { assert.fail("unexpected network request"); }
+
+function heldFetch() {
+  let release;
+  let started;
+  const response = new Promise(resolve => { release = () => resolve(new Response(PNG)); });
+  const ready = new Promise(resolve => { started = resolve; });
+  return { ready, release, fetchImpl: async () => { started(); return response; } };
+}
+function cacheNames() {
+  const cache = path.join(process.env.HERDR_APP_HOME, "data/project-icons");
+  return fs.existsSync(cache) ? fs.readdirSync(cache).sort() : [];
+}
+
+test("pending resolution preserves a newer explicit letter and discards its download", async (t) => {
+  const p = repo(t, "solo");
+  save([{ path: p, future: { keep: true } }]);
+  const held = heldFetch();
+  const pending = resolveIcons({ fetchImpl: held.fetchImpl });
+  await held.ready;
+  assert.deepEqual(await setIcon(p, "letter"), { path: p, icon: { source: "letter" } });
+  held.release();
+  const result = await pending;
+  assert.equal(result.projects[0].iconSource, "letter");
+  assert.deepEqual(stored(), [{ path: p, future: { keep: true }, icon: { source: "letter" } }]);
+  assert.deepEqual(cacheNames(), []);
+});
+
+test("pending custom selection preserves a completed rename and latest unrelated entries", async () => {
+  save([{ path: project, name: "Before", future: { keep: true } }]);
+  const held = heldFetch();
+  const pending = setIcon(project, "custom", "https://example.test/x", { fetchImpl: held.fetchImpl });
+  await held.ready;
+  assert.equal(renameProject(project, "After").name, "After");
+  const other = { path: path.join(tmp, "newly-saved"), extra: 42 };
+  save([...stored(), other]);
+  held.release();
+  const result = await pending;
+  assert.equal(result.icon.source, "custom");
+  assert.deepEqual(stored(), [{ path: project, name: "After", future: { keep: true }, icon: result.icon }, other]);
+  assert.deepEqual(cacheNames(), [path.basename(result.icon.file)]);
+  assert.deepEqual(fs.readFileSync(iconFile(result.icon)), PNG);
+});
+
+test("pending custom selection cannot resurrect a removed project and discards its download", async () => {
+  save([{ path: project }, { path: "/keep", future: true }]);
+  const held = heldFetch();
+  const pending = setIcon(project, "custom", "https://example.test/x", { fetchImpl: held.fetchImpl });
+  await held.ready;
+  assert.deepEqual(removeProject(project), { removed: true });
+  held.release();
+  assert.ok((await pending).error);
+  assert.deepEqual(stored(), [{ path: "/keep", future: true }]);
+  assert.deepEqual(cacheNames(), []);
+});
+
+test("pending explicit selection rejects a competing newer custom choice without deleting it", async () => {
+  const source = path.join(tmp, "source.png");
+  fs.writeFileSync(source, PNG);
+  save([{ path: project }]);
+  const initial = await setIcon(project, "custom", source);
+  const held = heldFetch();
+  const pending = setIcon(project, "custom", "https://example.test/x", { fetchImpl: held.fetchImpl });
+  await held.ready;
+  const newer = await setIcon(project, "custom", source);
+  assert.notEqual(initial.icon.file, newer.icon.file);
+  held.release();
+  assert.ok((await pending).error);
+  assert.deepEqual(stored(), [{ path: project, icon: newer.icon }]);
+  assert.deepEqual(cacheNames(), [path.basename(newer.icon.file)]);
+  assert.deepEqual(fs.readFileSync(iconFile(newer.icon)), PNG);
+});
+
+test("pending resolution skips removed projects without restoring them and cleans the download", async (t) => {
+  const p = repo(t, "solo");
+  save([{ path: p }]);
+  const held = heldFetch();
+  const pending = resolveIcons({ fetchImpl: held.fetchImpl });
+  await held.ready;
+  removeProject(p);
+  held.release();
+  assert.deepEqual((await pending).projects, []);
+  assert.deepEqual(stored(), []);
+  assert.deepEqual(cacheNames(), []);
+});
 
 // Removing source selection, size validation, or persist-before-cleanup must break these behaviors.
 test("resolveIcons prefers a repo icon", async (t) => {
