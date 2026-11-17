@@ -1,10 +1,12 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared, pickFolder, notify, home, appHome, readTextFile, knownAgents } from "herdr";
-import { placeOf, group, visibleRows, label, agentsBySpace, sinceUpdate, elapsed, activitySort, attentionCount, sortGroups, hideMainRows } from "./group.js";
+import { placeOf, group, visibleRows, label, letterOf, colorIndex, agentsBySpace, sinceUpdate, elapsed, activitySort, attentionCount, sortGroups, hideMainRows } from "./group.js";
 import { QUIT, agentKind, parseResume, fallbackResume, keptFlags, withFlags, resumeArgv, stripAnsi, isShellArgv, agentExited } from "./sleep.js";
 import { findNode, sidebarStep } from "./sidebar.js";
 import config from "./config.js";
+
+const PALETTE = ["#c2410c", "#b45309", "#4d7c0f", "#047857", "#0e7490", "#1d4ed8", "#6d28d9", "#be185d"];
 
 async function hcGet(terminal) {
   try {
@@ -73,6 +75,9 @@ export default class Projects extends View {
     this.reposSig = "";
     this.side = { seenWide: false, hidden: null };
     this.saved = [];
+    this.logins = [];
+    this.resolvedOnce = false;
+    this.hoverHeader = null;
     this.seeded = null;
     this.sleepingByWorktree = {};
     this.knownAgentByKind = new Map();
@@ -86,6 +91,11 @@ export default class Projects extends View {
     if (checking()) return;
 
     setShared("orca.projects.options", this.options);
+    cx.spawn(async (cx) => {
+      const r = await this.cli(["projects", "logins"]);
+      if (Array.isArray(r.logins)) this.logins = r.logins;
+      cx.notify();
+    });
     this.loadSaved(cx);
     this.loadKnownAgents(cx);
     cx.timer.every(500, (cx) => this.check(cx));
@@ -115,6 +125,11 @@ export default class Projects extends View {
         } else {
           this.saved = Array.isArray(r.projects) ? r.projects : [];
           this.seeded = Boolean(r.seeded);
+          if (!this.resolvedOnce && this.saved.some((s) => s.iconSource === null)) {
+            this.resolvedOnce = true;
+            const resolved = await this.cli(["projects", "resolve-icons"], 60000);
+            if (Array.isArray(resolved.projects)) this.saved = resolved.projects;
+          }
         }
       } catch {
         this.saved = [];
@@ -536,6 +551,9 @@ export default class Projects extends View {
           if (res.error) {
             notify({ title: "Add project", body: res.error, level: "error" });
           } else {
+            const resolved = await this.cli(["projects", "resolve-icons"], 60000);
+            if (Array.isArray(resolved.projects)) this.saved = resolved.projects;
+            cx.notify();
             const name = (res.path || f).split("/").filter(Boolean).pop() || f;
             notify({ title: "Project added", body: name });
             setShared("orca.projects.rev", Date.now());
@@ -932,7 +950,7 @@ export default class Projects extends View {
         for (const g of groups) {
           for (const row of g.rows) {
             if (!row.sleeping) continue;
-            const rowLabel = label(row);
+            const rowLabel = label(row, this.logins);
             for (const sa of row.sleeping.agents ?? []) {
               sleepingEntries.push({ sa, row, rowLabel });
             }
@@ -944,7 +962,7 @@ export default class Projects extends View {
         } else {
           const children = sorted.map((a) => {
             const sp = spaceById.get(a.space);
-            return this.renderActivityAgent(a, sp ? label(sp) : "", t, now);
+            return this.renderActivityAgent(a, sp ? label(sp, this.logins) : "", t, now);
           });
           for (let i = 0; i < sleepingEntries.length; i++) {
             const { sa, row, rowLabel } = sleepingEntries[i];
@@ -1049,14 +1067,26 @@ export default class Projects extends View {
           });
         })
       )
+      .on_hover((h, cx) => {
+        const k = h ? g.key : (this.hoverHeader === g.key ? null : this.hoverHeader);
+        if (k !== this.hoverHeader) {
+          this.hoverHeader = k;
+          cx.notify();
+        }
+      })
       .child(div().flex_none().text_color(t.dim).child(isCollapsed ? "▸" : "▾"))
-      .child(div().flex_initial().truncate().text_color(missing ? t.dim : t.foreground).font_bold().child(g.name))
+      .when(g.kind === "repo", (el) => el.child(g.icon
+        ? image(g.icon).size(16).rounded(3).flex_none()
+        : div().size(16).rounded(3).flex_none().bg(PALETTE[colorIndex(g.key, PALETTE.length)])
+          .flex().items_center().justify_center()
+          .child(div().text_size(10).font_bold().text_color("#ffffff").child(letterOf(g.displayName)))))
+      .child(div().flex_initial().truncate().text_color(missing ? t.dim : t.foreground).font_bold().child(g.kind === "repo" ? g.displayName : g.name))
       .child(div().flex_none().text_color(t.muted).child(String(g.rows.length)))
       .child(div().flex_1());
 
     if (missing) {
       head.child(div().flex_none().text_size(11).text_color(t.dim).child("missing"));
-    } else if (g.kind === "repo") {
+    } else if (g.kind === "repo" && this.hoverHeader === g.key) {
       head.child(
         div()
           .id(`project-add-${g.key}`)
@@ -1140,7 +1170,7 @@ export default class Projects extends View {
           .min_w(0)
           .truncate()
           .text_color(sleeping ? t.dim : t.foreground)
-          .child(label(row))
+          .child(label(row, this.logins))
       );
 
     if (row.main) {
