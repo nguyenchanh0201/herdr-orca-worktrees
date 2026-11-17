@@ -204,7 +204,7 @@ test('header right-click opens expanded popup with the display name', async () =
   await h.flush();
   const tree = h.view.renderHeader({ kind: 'repo', key: 'r', primary: '/repo', saved: true, displayName: 'Admin Portal', rows: [] }, false, {});
   tree.attrs.on_mouse_down[1]({}, h.cx);
-  assert.deepEqual(h.state.overlays, [{ open: { mod: 'orca-project', kind: 'popup', width: 220, height: 185, props: { mode: 'header', path: '/repo', saved: true, name: 'Admin Portal', group: null, groups: [] } } }]);
+  assert.deepEqual(h.state.overlays, [{ open: { mod: 'orca-project', kind: 'popup', width: 220, height: 240, props: { mode: 'header', path: '/repo', saved: true, name: 'Admin Portal', group: null, groups: [] } } }]);
 });
 
 // Catches actions on unsaved groups, missing/reordered rows, or incorrect dialog contracts.
@@ -692,18 +692,26 @@ test('new group dialog prefills, rejects duplicates, creates', async () => {
   assert.deepEqual(h.state.overlays, [{ close: 'dlg' }]);
 });
 
-test('hovering subRow without prior click opens the side popup and closing parent closes it', async () => {
-  const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin' });
-  const tree = h.view.render();
-  const openInRow = nodes(tree).find((n) => n.attrs.id === 'open-in');
-  assert.ok(openInRow);
-  openInRow.attrs.on_hover(true, h.cx);
-  assert.equal(h.state.overlays.length, 1);
-  assert.equal(h.state.overlays[0].open.props.mode, 'open-in');
+test('clicking subRow drills down in place with Back and preserves icons', async () => {
+  const h = await harness(
+    (args) => args[0] === 'apps' && args[1] === 'list'
+      ? { installed: [{ id: 'zed', name: 'Zed', icon: 'data/app-icons/zed.png' }], chosen: ['zed'] }
+      : {},
+    { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin' }
+  );
+  let tree = h.view.render();
+  nodes(tree).find((n) => n.attrs.id === 'open-in').attrs.on_click({}, h.cx);
+  await h.flush();
+  assert.equal(h.state.overlays.length, 0);
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('‹ Back'));
+  assert.ok(texts(tree).includes('Zed'));
+  assert.ok(nodes(tree).some((n) => n.kind === 'image' && n.path === 'data/app-icons/zed.png'));
 
-  h.view.sideOverlayId = 'side-1';
-  h.view.close();
-  assert.deepEqual(h.state.overlays.slice(1), [{ close: 'side-1' }, { close: 'menu' }]);
+  nodes(tree).find((n) => n.attrs.id === 'open-in-back').attrs.on_click({}, h.cx);
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('Open in'));
+  assert.ok(texts(tree).includes('Project Group'));
 });
 
 test('group popup notifies on set-group error without refreshing', async () => {
@@ -719,23 +727,19 @@ test('group popup notifies on set-group error without refreshing', async () => {
   assert.equal(h.state.shared.has('orca.projects.rev'), false);
 });
 
-test('subRow captures bounds on mouse_move, Escape in side popup closes parent, and non-subRow hover closes side popup', async () => {
-  const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin', anchor: { x: 100, y: 50 } });
-  const tree = h.view.render();
-  const openInRow = nodes(tree).find((n) => n.attrs.id === 'open-in');
-  openInRow.attrs.on_mouse_move({ bounds: { x: 5, y: 20, width: 210, height: 31 } }, h.cx);
-  assert.equal(h.state.overlays.length, 1);
-  assert.deepEqual(h.state.overlays[0].open.at, { x: 319, y: 70 });
+test('clicking Project Group drills down in place with Back', async () => {
+  const h = await harness(undefined, { overlay: 'menu', mode: 'header', saved: true, path: '/repo', name: 'Admin', group: 'CTM', groups: ['CTM', 'Tools'] });
+  let tree = h.view.render();
+  nodes(tree).find((n) => n.attrs.id === 'project-group').attrs.on_click({}, h.cx);
+  assert.equal(h.state.overlays.length, 0);
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('‹ Back'));
+  assert.ok(texts(tree).includes('New group from project…'));
+  assert.ok(texts(tree).includes('Tools'));
 
-  h.view.sideOverlayId = 'side-1';
-  const renameRow = nodes(tree).find((n) => n.attrs.id === 'rename-project');
-  renameRow.attrs.on_hover(true, h.cx);
-  assert.deepEqual(h.state.overlays.slice(1), [{ close: 'side-1' }]);
-
-  const sub = await harness(undefined, { overlay: 'sub', mode: 'open-in', folder: '/r', parent: 'menu' });
-  await sub.flush();
-  sub.view.render().attrs.on_key_down({ key: 'escape' }, sub.cx);
-  assert.deepEqual(sub.state.overlays, [{ close: 'sub' }, { close: 'menu' }]);
+  nodes(tree).find((n) => n.attrs.id === 'group-back').attrs.on_click({}, h.cx);
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('Project Group'));
 });
 
 test('new-group Input is styled and dialog height fits inline error', async () => {

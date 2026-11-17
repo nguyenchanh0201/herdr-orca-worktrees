@@ -19,23 +19,12 @@ export default class OrcaProject extends View {
     const p = props();
     this.mode = p.mode ?? "add";
     this.closed = false;
-    this.rowBounds = {};
-    this.sideOverlayId = null;
-    this.sideMode = null;
+    this.backMode = null;
+    this.openInFolder = p.folder ?? null;
     this.handle.focus();
 
     if (this.mode === "open-in" || this.mode === "apps") {
-      this.appsInstalled = [];
-      this.appsChosen = new Set();
-      cx.spawn(async (cx) => {
-        try {
-          const res = await exec(config.node, [config.cli, "apps", "list"]);
-          const parsed = JSON.parse(res.stdout || "{}");
-          if (Array.isArray(parsed.installed)) this.appsInstalled = parsed.installed;
-          if (Array.isArray(parsed.chosen)) this.appsChosen = new Set(parsed.chosen);
-        } catch {}
-        cx.notify();
-      });
+      this.loadApps(cx);
     } else if (this.mode === "new-group") {
       this.localError = "";
       this.groupInput = InputState.new({ value: p.name ? `${p.name} group` : "" });
@@ -163,14 +152,23 @@ export default class OrcaProject extends View {
     }
   }
 
+  loadApps(cx) {
+    this.appsInstalled = [];
+    this.appsChosen = new Set();
+    cx.spawn(async (cx) => {
+      try {
+        const res = await exec(config.node, [config.cli, "apps", "list"]);
+        const parsed = JSON.parse(res.stdout || "{}");
+        if (Array.isArray(parsed.installed)) this.appsInstalled = parsed.installed;
+        if (Array.isArray(parsed.chosen)) this.appsChosen = new Set(parsed.chosen);
+      } catch {}
+      cx.notify();
+    });
+  }
+
   close() {
     if (this.closed) return;
     this.closed = true;
-    if (this.sideOverlayId) {
-      closeOverlay(this.sideOverlayId);
-      this.sideOverlayId = null;
-      this.sideMode = null;
-    }
     closeOverlay(props().overlay);
   }
 
@@ -226,13 +224,6 @@ export default class OrcaProject extends View {
       .cursor_pointer()
       .text_color(t.foreground)
       .hover((s) => s.bg(t.selected))
-      .on_hover((hovered) => {
-        if (hovered && this.sideOverlayId) {
-          closeOverlay(this.sideOverlayId);
-          this.sideOverlayId = null;
-          this.sideMode = null;
-        }
-      })
       .on_click(onClick)
       .child(div().flex_1().child(label));
   }
@@ -248,80 +239,23 @@ export default class OrcaProject extends View {
       .cursor_pointer()
       .text_color(t.foreground)
       .hover((s) => s.bg(t.selected))
-      .on_mouse_move((e) => {
-        if (e?.bounds) {
-          this.rowBounds[id] = e.bounds;
-          if (this.sideMode !== id) {
-            this.sideMode = id;
-            onOpen(e.bounds);
-          }
-        }
-      })
-      .on_mouse_down("left", (e) => {
-        if (e?.bounds) this.rowBounds[id] = e.bounds;
-      })
-      .on_hover((hovered) => {
-        if (hovered && this.sideMode !== id) {
-          this.sideMode = id;
-          onOpen(this.rowBounds[id] ?? null);
-        }
-      })
-      .on_click(() => {
-        this.sideMode = id;
-        onOpen(this.rowBounds[id] ?? null);
-      })
+      .on_click((_e, cx) => onOpen(cx))
       .child(div().flex_1().child(label))
       .child(div().flex_none().text_color(t.dim).child("›"));
   }
 
-  openSidePopup(spec) {
-    if (this.sideOverlayId) {
-      closeOverlay(this.sideOverlayId);
-      this.sideOverlayId = null;
-    }
-    this.sideOverlayId = openOverlay(spec);
+  openOpenIn(folder, cx) {
+    this.backMode = this.mode;
+    this.openInFolder = folder;
+    this.mode = "open-in";
+    this.loadApps(cx);
+    cx.notify();
   }
 
-  sideAt(bounds) {
-    const p = props();
-    if (p.anchor && bounds) {
-      return { x: p.anchor.x + bounds.x + bounds.width + 4, y: p.anchor.y + bounds.y };
-    }
-    if (p.anchor) {
-      return { x: p.anchor.x + 224, y: p.anchor.y };
-    }
-    return "pointer";
-  }
-
-  openOpenIn(folder, bounds) {
-    this.openSidePopup({
-      mod: "orca-project",
-      kind: "popup",
-      frame: "none",
-      width: 200,
-      height: 280,
-      at: this.sideAt(bounds),
-      props: { mode: "open-in", folder, parent: props().overlay },
-    });
-  }
-
-  openGroupMenu(p, bounds) {
-    this.openSidePopup({
-      mod: "orca-project",
-      kind: "popup",
-      frame: "none",
-      width: 220,
-      height: 280,
-      at: this.sideAt(bounds),
-      props: {
-        mode: "group",
-        path: p.path,
-        name: p.name,
-        group: p.group ?? null,
-        groups: Array.isArray(p.groups) ? p.groups : [],
-        parent: props().overlay,
-      },
-    });
+  openGroupMenu(cx) {
+    this.backMode = this.mode;
+    this.mode = "group";
+    cx.notify();
   }
 
   renderAdd(t) {
@@ -379,8 +313,8 @@ export default class OrcaProject extends View {
       })
       .when(Boolean(p.path), (el) =>
         el
-          .child(this.subRow("open-in", "Open in", (bounds) => this.openOpenIn(p.path, bounds), t))
-          .child(this.subRow("project-group", "Project Group", (bounds) => this.openGroupMenu(p, bounds), t))
+          .child(this.subRow("open-in", "Open in", (cx) => this.openOpenIn(p.path, cx), t))
+          .child(this.subRow("project-group", "Project Group", (cx) => this.openGroupMenu(cx), t))
       )
       .when(Boolean(p.saved), (el) =>
         el.child(
@@ -786,7 +720,7 @@ export default class OrcaProject extends View {
 
     return wrap
       .when(Boolean(p.folder || p.worktree), (el) =>
-        el.child(this.subRow("open-in", "Open in", (bounds) => this.openOpenIn(p.folder || p.worktree, bounds), t))
+        el.child(this.subRow("open-in", "Open in", (cx) => this.openOpenIn(p.folder || p.worktree, cx), t))
       )
       .when(Boolean(p.hasAgents && !p.sleeping && p.space), (el) =>
         el.child(
@@ -862,15 +796,12 @@ export default class OrcaProject extends View {
 
   renderOpenIn(t) {
     const p = props();
+    const folder = this.openInFolder ?? p.folder;
     const chosenApps = this.appsInstalled.filter((a) => this.appsChosen.has(a.id));
     const wrap = v_flex()
       .id("orca-project-open-in")
       .w_full()
       .bg(t.popover)
-      .border(1)
-      .border_color(t.border)
-      .rounded(8)
-      .overflow_y_scrollbar()
       .p(5)
       .text_size(12.8)
       .track_focus(this.handle)
@@ -880,6 +811,23 @@ export default class OrcaProject extends View {
           if (p.parent) closeOverlay(p.parent);
         }
       });
+
+    if (this.backMode) {
+      wrap
+        .child(
+          this.popupRow(
+            "open-in-back",
+            "‹ Back",
+            (_e, cx) => {
+              this.mode = this.backMode;
+              this.backMode = null;
+              cx.notify();
+            },
+            t
+          )
+        )
+        .child(div().h(1).my(4).bg(t.border));
+    }
 
     for (const app of chosenApps) {
       wrap.child(
@@ -896,7 +844,7 @@ export default class OrcaProject extends View {
           .hover((s) => s.bg(t.selected))
           .on_click(async () => {
             try {
-              const res = await exec(config.node, [config.cli, "open", app.id, p.folder]);
+              const res = await exec(config.node, [config.cli, "open", app.id, folder]);
               const parsed = JSON.parse(res.stdout || "{}");
               if (parsed?.error) {
                 notify({ title: "Open in", body: parsed.error, level: "error" });
@@ -1033,10 +981,6 @@ export default class OrcaProject extends View {
       .id("orca-project-group")
       .w_full()
       .bg(t.popover)
-      .border(1)
-      .border_color(t.border)
-      .rounded(8)
-      .overflow_y_scrollbar()
       .p(5)
       .text_size(12.8)
       .track_focus(this.handle)
@@ -1045,7 +989,26 @@ export default class OrcaProject extends View {
           this.close();
           if (p.parent) closeOverlay(p.parent);
         }
-      })
+      });
+
+    if (this.backMode) {
+      wrap
+        .child(
+          this.popupRow(
+            "group-back",
+            "‹ Back",
+            (_e, cx) => {
+              this.mode = this.backMode;
+              this.backMode = null;
+              cx.notify();
+            },
+            t
+          )
+        )
+        .child(div().h(1).my(4).bg(t.border));
+    }
+
+    wrap
       .child(
         this.popupRow(
           "new-group-from-project",
