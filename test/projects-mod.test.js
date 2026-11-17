@@ -106,6 +106,28 @@ test('unresolved saved icons resolve once per start and again after adding a pro
   assert.equal(h.view.saved[0].iconSource, 'letter');
 });
 
+// A slow or offline icon fetch must not hold back the saved list or the redraw.
+test('saved projects show before resolve-icons finishes', async () => {
+  let finish, answerList;
+  const slow = new Promise((r) => { finish = r; });
+  const list = new Promise((r) => { answerList = r; });
+  const h = await harness(args => {
+    if (args[1] === 'list') return list;
+    if (args[1] === 'resolve-icons' || args[1] === 'logins') return slow;
+    return {};
+  });
+  const tick = () => new Promise((r) => setImmediate(r));
+  await tick();
+  const before = h.state.notices;
+  answerList({ projects: [{ path: '/old', iconSource: null }], seeded: true });
+  await tick(); await tick();
+  assert.equal(h.view.saved.length, 1);
+  assert.ok(h.state.notices > before, 'redraw must not wait for resolve-icons');
+  finish({ logins: [], projects: [{ path: '/old', iconSource: 'letter' }] });
+  await h.flush();
+  assert.equal(h.view.saved[0].iconSource, 'letter');
+});
+
 // Catches missing/reordered icons, wrong badge styling/name, or network work during render.
 test('repo headers draw relative images or eight readable letter badge colors and display names', async () => {
   const h = await harness();

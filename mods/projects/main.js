@@ -127,8 +127,12 @@ export default class Projects extends View {
           this.seeded = Boolean(r.seeded);
           if (!this.resolvedOnce && this.saved.some((s) => s.iconSource === null)) {
             this.resolvedOnce = true;
-            const resolved = await this.cli(["projects", "resolve-icons"], 60000);
-            if (Array.isArray(resolved.projects)) this.saved = resolved.projects;
+            // Its own spawn: downloads can take seconds and must not hold back the list or sleeping rows.
+            cx.spawn(async (cx) => {
+              const resolved = await this.cli(["projects", "resolve-icons"], 60000);
+              if (Array.isArray(resolved.projects)) this.saved = resolved.projects;
+              cx.notify();
+            });
           }
         }
       } catch {
