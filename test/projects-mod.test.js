@@ -20,7 +20,7 @@ function element(kind, path) {
 }
 
 async function harness(respond = () => ({}), overlayProps = null) {
-  const state = { shared: new Map(), calls: [], spaces: [], agents: [], checking: false, notices: 0, overlays: [], inputs: [] };
+  const state = { shared: new Map(), calls: [], runs: [], storageSets: [], scrolls: [], spaces: [], agents: [], checking: false, notices: 0, overlays: [], inputs: [] };
   const pending = [];
   const cx = { notify() { state.notices++; }, stop_propagation() {}, focus_handle: () => ({ focus() {} }), spawn(fn) { pending.push(Promise.resolve().then(() => fn(cx))); }, timer: { every() {} } };
   const context = {
@@ -29,12 +29,12 @@ async function harness(respond = () => ({}), overlayProps = null) {
     ...await import('../mods/projects/sidebar.js'),
     View: class {}, div: () => element('div'), svg: p => element('svg', p), image: p => element('image', p),
     h_flex: () => element('h_flex'), v_flex: () => element('v_flex'),
-    ScrollHandle: { new: () => ({ scroll_to_item() {} }) },
-    localStorage: { getItem: () => null, setItem() {} },
+    ScrollHandle: { new: () => ({ scroll_to_item(i) { state.scrolls.push(i); } }) },
+    localStorage: { getItem: () => null, setItem(k, v) { state.storageSets.push([k, v]); } },
     shared: key => state.shared.get(key), setShared: (k, v) => state.shared.set(k, v),
     spaces: () => state.spaces, panes: () => [], agents: () => state.agents, machines: () => [{ name: null, layout: 'ready' }],
     checking: () => state.checking, layout: () => null, knownAgents: async () => [],
-    run() {}, openOverlay(spec) { state.overlays.push({ open: JSON.parse(JSON.stringify(spec)) }); }, closeOverlay(id) { state.overlays.push({ close: id }); },
+    run(cmd, args) { state.runs.push({ cmd, args }); }, openOverlay(spec) { state.overlays.push({ open: JSON.parse(JSON.stringify(spec)) }); }, closeOverlay(id) { state.overlays.push({ close: id }); },
     props: () => overlayProps, notify() {}, setAgentOrder() {}, pickFolder: async () => '/new',
     InputState: { new(options = {}) {
       const input = { options, text: options.value ?? '', handlers: {}, value() { return this.text; }, set_value(v) { this.text = v; }, on(event, fn) { this.handlers[event] = fn; }, focus() { this.focused = true; } };
@@ -309,5 +309,96 @@ test('icon dialog Escape closes without changing the project', async () => {
   tree.attrs.on_key_down({ key: 'escape' }, h.cx);
   assert.deepEqual(h.state.overlays, [{ close: 'icon' }]);
   assert.equal(h.state.calls.length, 0);
+});
+
+async function cardHarness() {
+  const h = await harness();
+  await h.flush();
+  const space = { id: 's1', folder: '/r', machine: null, branch: 'main', named: false, name: 's1', active: true, tabs: [] };
+  h.state.spaces = [space];
+  h.state.agents = [
+    { address: 'a1', space: 's1', pane: 'p1', status: 'done', program: { name: 'Claude', icon: 'icons/claude.svg' } },
+    { address: 'a2', space: 's1', pane: 'p2', status: 'blocked', program: { name: 'Codex', icon: 'icons/codex.svg' } },
+  ];
+  h.view.repo.set('/r', { primary: '/r', linked: false });
+  h.view.saved = [{ path: '/r', name: null, icon: null, exists: true }];
+  return h;
+}
+
+test('worktree card folds agents into a strip by default', async () => {
+  const h = await cardHarness();
+  const tree = h.view.render();
+  const t = texts(tree);
+  assert.ok(t.includes('!'));
+  assert.ok(t.includes('›'));
+  assert.ok(!t.includes('Done - Claude'));
+  const strip = nodes(tree).find((n) => n.attrs.id === 'strip-/r');
+  assert.ok(strip);
+  const icons = nodes(strip).filter((n) => n.kind === 'image' || n.kind === 'svg');
+  assert.equal(icons.length, 2);
+});
+
+test('clicking the strip unfolds and remembers it', async () => {
+  const h = await cardHarness();
+  let tree = h.view.render();
+  const strip = nodes(tree).find((n) => n.attrs.id === 'strip-/r');
+  strip.attrs.on_click({}, h.cx);
+  assert.equal(h.view.agentsOpen.has('/r'), true);
+  assert.deepEqual(h.state.storageSets.at(-1), ['projects.agentsOpen', JSON.stringify(['/r'])]);
+
+  tree = h.view.render();
+  const t = texts(tree);
+  assert.ok(t.includes('2 agents'));
+  assert.ok(t.includes('Blocked - Codex'));
+  assert.ok(t.includes('Done - Claude'));
+
+  const head = nodes(tree).find((n) => n.attrs.id === 'agents-head-/r');
+  head.attrs.on_click({}, h.cx);
+  assert.equal(h.view.agentsOpen.has('/r'), false);
+  assert.deepEqual(h.state.storageSets.at(-1), ['projects.agentsOpen', JSON.stringify([])]);
+});
+
+test('agent row click focuses its pane', async () => {
+  const h = await cardHarness();
+  h.view.agentsOpen.add('/r');
+  const tree = h.view.render();
+  const row = nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Done - Claude'));
+  assert.ok(row);
+  row.attrs.on_click({}, h.cx);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.state.runs)), [{ cmd: 'pane.focus', args: { pane: 'p1' } }]);
+});
+
+test('main checkout shows the main badge instead of a star', async () => {
+  const h = await cardHarness();
+  const t = texts(h.view.render());
+  assert.ok(t.includes('main'));
+  assert.ok(!t.includes('★'));
+});
+
+test('card without agents has no strip', async () => {
+  const h = await cardHarness();
+  h.state.agents = [];
+  const t = texts(h.view.render());
+  assert.ok(!t.includes('›'));
+  assert.ok(!t.some((s) => s.includes('agent')));
+});
+
+test('sleeping worktree card shows a dimmed strip with a moon', async () => {
+  const h = await harness();
+  await h.flush();
+  h.view.saved = [{ path: '/r', name: null, icon: null, exists: true }];
+  h.view.sleepingByWorktree = {
+    '/wt/s': { version: 1, sleptAt: 1000, repo: '/r', branch: 'feat/s', agents: [{ kind: 'claude', name: 'Claude' }] },
+  };
+  const tree = h.view.render();
+  const strip = nodes(tree).find((n) => n.attrs.id === 'strip-/wt/s');
+  assert.ok(strip);
+  assert.ok(nodes(strip).some((n) => n.kind === 'svg' && n.path === 'mods/projects/moon.svg'));
+  const title = nodes(tree).find((n) => n.attrs.id === 'sleep-/wt/s');
+  assert.ok(title);
+  title.attrs.on_click({}, h.cx);
+  const req = h.state.shared.get('orca.projects.request');
+  assert.equal(req.kind, 'wake');
+  assert.equal(req.worktree, '/wt/s');
 });
 

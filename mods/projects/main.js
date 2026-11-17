@@ -1,7 +1,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared, pickFolder, notify, home, appHome, readTextFile, knownAgents } from "herdr";
-import { placeOf, group, visibleRows, label, letterOf, colorIndex, agentsBySpace, sinceUpdate, elapsed, activitySort, attentionCount, sortGroups, hideMainRows } from "./group.js";
+import { placeOf, group, visibleRows, label, letterOf, colorIndex, agentsBySpace, sinceUpdate, elapsed, activitySort, attentionCount, sortGroups, hideMainRows, topStatus, agentSummary, STATUS_GLYPH } from "./group.js";
 import { QUIT, agentKind, parseResume, fallbackResume, keptFlags, withFlags, resumeArgv, stripAnsi, isShellArgv, agentExited } from "./sleep.js";
 import { findNode, sidebarStep } from "./sidebar.js";
 import config from "./config.js";
@@ -49,6 +49,11 @@ export default class Projects extends View {
     try {
       const raw = localStorage.getItem("projects.collapsed");
       if (raw) this.collapsed = new Set(JSON.parse(raw));
+    } catch {}
+    this.agentsOpen = new Set();
+    try {
+      const raw = localStorage.getItem("projects.agentsOpen");
+      if (raw) this.agentsOpen = new Set(JSON.parse(raw));
     } catch {}
     this.view = "projects";
     try {
@@ -1001,20 +1006,15 @@ export default class Projects extends View {
               activeIndex = children.length;
             }
             const rowAgents = row.space ? (bySpace.get(row.space.id) ?? []) : [];
+            const sleepingAgents = row.sleeping ? (row.sleeping.agents ?? []) : [];
             const hasAgents = rowAgents.some((a) => agentKind(a) !== null);
             const worktree = row.worktree ?? (row.space ? placeOf(row.space, ps) : "");
-            children.push(this.renderRow(row, t, { hasAgents, worktree }));
-            if (row.sleeping) {
-              const sleepingAgents = row.sleeping.agents ?? [];
-              for (let i = 0; i < sleepingAgents.length; i++) {
-                children.push(this.renderSleepingAgent(sleepingAgents[i], row, t, i));
-              }
-            } else if (row.space) {
+            if (!row.sleeping && row.space) {
               for (const a of rowAgents) {
                 order.push(a.address);
-                children.push(this.renderAgent(a, t, now));
               }
             }
+            children.push(this.renderCard(row, rowAgents, sleepingAgents, t, now, { hasAgents, worktree }));
           }
         }
 
@@ -1178,10 +1178,144 @@ export default class Projects extends View {
       );
 
     if (row.main) {
-      rowEl.child(div().flex_none().text_color(t.dim).child("★"));
+      rowEl.child(this.chipBadge("main", t));
+    }
+    if (space?.machine) {
+      rowEl.child(this.chipBadge(space.machine, t));
     }
 
     return rowEl;
+  }
+
+  chipBadge(text, t) {
+    return div()
+      .flex_none()
+      .border(1)
+      .border_color(t.border)
+      .rounded(4)
+      .px(5)
+      .text_size(11)
+      .text_color(t.muted)
+      .child(text);
+  }
+
+  toggleAgents(worktree, cx) {
+    if (!worktree) return;
+    if (this.agentsOpen.has(worktree)) this.agentsOpen.delete(worktree);
+    else this.agentsOpen.add(worktree);
+    try {
+      localStorage.setItem("projects.agentsOpen", JSON.stringify([...this.agentsOpen]));
+    } catch {}
+    cx.notify();
+  }
+
+  renderCard(row, rowAgents, sleepingAgents, t, now, opts = {}) {
+    const space = row.space;
+    const active = Boolean(space?.active);
+    const sleeping = Boolean(row.sleeping);
+    const worktree = opts.worktree ?? row.worktree ?? "";
+    const live = !sleeping && space ? rowAgents : [];
+    const sleepList = sleeping ? (sleepingAgents ?? []) : [];
+    const count = sleeping ? sleepList.length : live.length;
+
+    const card = v_flex()
+      .id(`card-${space?.id ?? row.worktree}`)
+      .rounded(8)
+      .border(1)
+      .border_color(t.border)
+      .p(4)
+      .gap(4)
+      .mb(6)
+      .when(active, (el) => el.bg(t.selected))
+      .child(this.renderRow(row, t, opts));
+
+    if (count === 0) return card;
+
+    const open = Boolean(worktree) && this.agentsOpen.has(worktree);
+    if (!open) {
+      const { icons, more } = agentSummary(sleeping ? sleepList : live);
+      const strip = h_flex()
+        .id(`strip-${worktree}`)
+        .h(24)
+        .px(8)
+        .gap(6)
+        .items_center()
+        .rounded(6)
+        .bg(t.hover)
+        .cursor_pointer()
+        .on_click((_e, cx) => this.toggleAgents(worktree, cx));
+
+      if (sleeping) {
+        strip.child(svg("mods/projects/moon.svg").size(13).flex_none().text_color(t.dim));
+        for (const sa of icons) {
+          strip.child(this.sleepingAgentIcon(sa, t));
+        }
+      } else {
+        const top = topStatus(live);
+        strip.child(
+          div()
+            .flex_none()
+            .text_color(top ? (t[top] ?? t.unknown) : t.unknown)
+            .child(top ? STATUS_GLYPH[top] : "○")
+        );
+        for (const a of icons) {
+          strip.child(this.agentIcon(a, t));
+        }
+      }
+
+      if (more > 0) {
+        strip.child(div().flex_none().text_size(11).text_color(t.dim).child(`+${more}`));
+      }
+      strip.child(div().flex_1());
+      strip.child(div().flex_none().text_color(t.dim).child("›"));
+      return card.child(strip);
+    }
+
+    const head = h_flex()
+      .id(`agents-head-${worktree}`)
+      .h(24)
+      .px(8)
+      .items_center()
+      .rounded(6)
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => this.toggleAgents(worktree, cx))
+      .child(div().flex_1().text_size(11).text_color(t.muted).child(`${count} agent${count === 1 ? "" : "s"}`))
+      .child(div().flex_none().text_color(t.dim).child("⌄"));
+    card.child(head);
+
+    if (sleeping) {
+      for (let i = 0; i < sleepList.length; i++) {
+        card.child(this.renderSleepingAgent(sleepList[i], row, t, i));
+      }
+    } else {
+      for (const a of live) {
+        const dur = elapsed(now - (this.since.get(a.address)?.at ?? now));
+        const status = a.status ?? "";
+        const statusLabel = status ? status[0].toUpperCase() + status.slice(1) : "Unknown";
+        const name = a.program?.name ?? a.app ?? "";
+        const labelText = name ? `${statusLabel} - ${name}` : statusLabel;
+        card.child(
+          h_flex()
+            .id(`agent-${a.address}`)
+            .h(24)
+            .pl(16)
+            .pr(8)
+            .gap(6)
+            .items_center()
+            .rounded(6)
+            .cursor_pointer()
+            .hover((s) => s.bg(t.hover))
+            .on_click(() => run("pane.focus", { pane: a.pane }))
+            .child(div().flex_none().text_color(t[a.status] ?? t.unknown).child(STATUS_GLYPH[a.status] ?? "○"))
+            .child(this.agentIcon(a, t))
+            .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(labelText))
+            .when(Boolean(dur), (el) => el.child(div().flex_none().text_color(t.dim).child(dur)))
+        );
+      }
+    }
+
+    return card;
   }
 
   sleepingAgentIcon(sa, t) {
@@ -1236,26 +1370,6 @@ export default class Projects extends View {
       : a.program.tint
         ? svg(a.program.icon).size(13).flex_none().text_color(t.foreground)
         : image(a.program.icon).size(13).flex_none();
-  }
-
-  renderAgent(a, t, now) {
-    const dur = elapsed(now - (this.since.get(a.address)?.at ?? now));
-
-    return h_flex()
-      .id(`agent-${a.address}`)
-      .h(24)
-      .pl(24)
-      .pr(8)
-      .gap(8)
-      .items_center()
-      .rounded(6)
-      .cursor_pointer()
-      .hover((s) => s.bg(t.hover))
-      .on_click(() => run("pane.focus", { pane: a.pane }))
-      .child(this.agentIcon(a, t))
-      .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(a.program?.name ?? a.app ?? ""))
-      .child(div().flex_none().text_color(t[a.status] ?? t.unknown).child(a.status ?? ""))
-      .when(Boolean(dur), (el) => el.child(div().flex_none().text_color(t.dim).child(dur)));
   }
 
   renderActivityAgent(a, spaceLabel, t, now) {
