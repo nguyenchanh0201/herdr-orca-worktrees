@@ -1,7 +1,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, machines, agents, setAgentOrder, run, openOverlay, exec, theme, checking, layout, shared, setShared, pickFolder, notify, home, appHome, readTextFile, knownAgents } from "herdr";
-import { placeOf, group, visibleRows, label, letterOf, colorIndex, agentsBySpace, sinceUpdate, elapsed, activitySort, attentionCount, sortGroups, hideMainRows, topStatus, agentSummary, STATUS_GLYPH } from "./group.js";
+import { placeOf, group, visibleRows, label, letterOf, colorIndex, agentsBySpace, sinceUpdate, elapsed, activitySort, attentionCount, sortGroups, hideMainRows, topStatus, agentSummary, STATUS_GLYPH, projectGroups } from "./group.js";
 import { quitKeys, quitTyped, agentKind, parseResume, fallbackResume, keptFlags, fullAccessFlags, atPrompt, withFlags, resumeArgv, stripAnsi, isShellArgv, agentExited } from "./sleep.js";
 
 // Agents our tools start get full access: the flag goes right after the program word.
@@ -1006,29 +1006,40 @@ export default class Projects extends View {
         const activeSpace = sps.find((s) => s.active);
         const activeId = activeSpace ? activeSpace.id : null;
 
-        let displayGroups = sortGroups(groups, this.options.sort);
+        let displayGroups = groups;
         if (this.options.hideMain) {
           displayGroups = hideMainRows(displayGroups);
         }
 
-        for (const g of displayGroups) {
-          const isCollapsed = this.collapsed.has(g.key);
-          children.push(this.renderHeader(g, isCollapsed, t, children.length === 0));
-          const rows = visibleRows(g, isCollapsed);
-          for (const row of rows) {
-            if (row.space?.active) {
-              activeIndex = children.length;
+        const sections = projectGroups(displayGroups, this.options.sort);
+        for (const section of sections) {
+          const isGroup = Boolean(section.key);
+          const groupCollapsed = isGroup && this.collapsed.has(section.key);
+          if (isGroup) {
+            children.push(this.renderGroupHeader(section, groupCollapsed, t, children.length === 0));
+          }
+          for (const g of section.projects) {
+            if (groupCollapsed && !g.rows.some((r) => Boolean(r.space?.active))) {
+              continue;
             }
-            const rowAgents = row.space ? (bySpace.get(row.space.id) ?? []) : [];
-            const sleepingAgents = row.sleeping ? (row.sleeping.agents ?? []) : [];
-            const hasAgents = rowAgents.some((a) => agentKind(a) !== null);
-            const worktree = row.worktree ?? (row.space ? placeOf(row.space, ps) : "");
-            if (!row.sleeping && row.space) {
-              for (const a of rowAgents) {
-                order.push(a.address);
+            const isCollapsed = groupCollapsed || this.collapsed.has(g.key);
+            children.push(this.renderHeader(g, isCollapsed, t, children.length === 0, isGroup));
+            const rows = visibleRows(g, isCollapsed);
+            for (const row of rows) {
+              if (row.space?.active) {
+                activeIndex = children.length;
               }
+              const rowAgents = row.space ? (bySpace.get(row.space.id) ?? []) : [];
+              const sleepingAgents = row.sleeping ? (row.sleeping.agents ?? []) : [];
+              const hasAgents = rowAgents.some((a) => agentKind(a) !== null);
+              const worktree = row.worktree ?? (row.space ? placeOf(row.space, ps) : "");
+              if (!row.sleeping && row.space) {
+                for (const a of rowAgents) {
+                  order.push(a.address);
+                }
+              }
+              children.push(this.renderCard(row, rowAgents, sleepingAgents, t, now, { hasAgents, worktree, indented: isGroup }));
             }
-            children.push(this.renderCard(row, rowAgents, sleepingAgents, t, now, { hasAgents, worktree }));
           }
         }
 
@@ -1051,11 +1062,21 @@ export default class Projects extends View {
       .child(body);
   }
 
-  renderHeader(g, isCollapsed, t, first = false) {
-    const missing = g.kind === "repo" && g.exists === false;
-    const head = h_flex()
-      .id(`project-header-${g.key}`)
-      // More space above a project than between its worktrees.
+  toggleCollapsed(key, cx) {
+    if (this.collapsed.has(key)) {
+      this.collapsed.delete(key);
+    } else {
+      this.collapsed.add(key);
+    }
+    try {
+      localStorage.setItem("projects.collapsed", JSON.stringify([...this.collapsed]));
+    } catch {}
+    cx.notify();
+  }
+
+  renderGroupHeader(section, isCollapsed, t, first = false) {
+    return h_flex()
+      .id(`group-head-${section.key}`)
       .when(!first, (el) => el.mt(8))
       .h(28)
       .px(8)
@@ -1064,17 +1085,27 @@ export default class Projects extends View {
       .rounded(6)
       .cursor_pointer()
       .hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => {
-        if (this.collapsed.has(g.key)) {
-          this.collapsed.delete(g.key);
-        } else {
-          this.collapsed.add(g.key);
-        }
-        try {
-          localStorage.setItem("projects.collapsed", JSON.stringify([...this.collapsed]));
-        } catch {}
-        cx.notify();
-      })
+      .on_click((_e, cx) => this.toggleCollapsed(section.key, cx))
+      .child(div().flex_none().text_color(t.dim).child(isCollapsed ? "▸" : "▾"))
+      .child(svg("mods/projects/groups.svg").size(14).flex_none().text_color(t.muted))
+      .child(div().flex_1().min_w(0).truncate().font_bold().text_color(t.foreground).child(section.name));
+  }
+
+  renderHeader(g, isCollapsed, t, first = false, indented = false) {
+    const missing = g.kind === "repo" && g.exists === false;
+    const head = h_flex()
+      .id(`project-header-${g.key}`)
+      // More space above a project than between its worktrees.
+      .when(!first, (el) => el.mt(8))
+      .when(indented, (el) => el.ml(14))
+      .h(28)
+      .px(8)
+      .gap(6)
+      .items_center()
+      .rounded(6)
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => this.toggleCollapsed(g.key, cx))
       .when(g.kind === "repo", (el) =>
         el.on_mouse_down("right", (_e, cx) => {
           cx.stop_propagation();
@@ -1237,7 +1268,7 @@ export default class Projects extends View {
     const card = v_flex()
       .id(`card-${cardKey}`)
       // Indented under the project and borderless, so projects → worktrees read as a tree.
-      .ml(22)
+      .ml(opts.indented ? 36 : 22)
       .p(2)
       .gap(2)
       .mb(2)

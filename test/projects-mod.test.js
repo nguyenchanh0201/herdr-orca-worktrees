@@ -484,6 +484,59 @@ test('active card paints selected background once on card and not on inner title
   assert.equal(title?.attrs.bg, undefined);
 });
 
+async function groupHarness() {
+  const h = await harness();
+  await h.flush();
+  h.state.spaces = [
+    { id: 's1', folder: '/r', machine: null, branch: 'main', named: false, name: 's1', active: true, tabs: [] },
+    { id: 's2', folder: '/wt/2', machine: null, branch: 'feat/2', named: false, name: 's2', active: false, tabs: [] },
+  ];
+  h.view.repo.set('/r', { primary: '/r', linked: false });
+  h.view.repo.set('/wt/2', { primary: '/r', linked: true });
+  h.view.saved = [{ path: '/r', name: 'Server', icon: null, exists: true, group: 'CTM group' }];
+  return h;
+}
+
+test('grouped projects render under a group header', async () => {
+  const h = await groupHarness();
+  const tree = h.view.render();
+  const t = texts(tree);
+  assert.ok(t.indexOf('CTM group') !== -1);
+  assert.ok(t.indexOf('CTM group') < t.indexOf('Server'));
+  assert.ok(nodes(tree).some((n) => n.attrs.id === 'group-head-group:ctm group'));
+});
+
+test('folding a group hides its projects but keeps the active card', async () => {
+  const h = await groupHarness();
+  let tree = h.view.render();
+  const head = nodes(tree).find((n) => n.attrs.id === 'group-head-group:ctm group');
+  assert.ok(head);
+  head.attrs.on_click({}, h.cx);
+  const lastSet = h.state.storageSets.findLast(([k]) => k === 'projects.collapsed');
+  assert.ok(lastSet && JSON.parse(lastSet[1]).includes('group:ctm group'));
+
+  tree = h.view.render();
+  assert.ok(texts(tree).includes('Server'));
+  assert.ok(nodes(tree).some((n) => n.attrs.id === 'card-s1'));
+  assert.ok(!nodes(tree).some((n) => n.attrs.id === 'card-s2'));
+});
+
+test('folded group with no active space shows only its header', async () => {
+  const h = await groupHarness();
+  h.state.spaces[0].active = false;
+  h.view.collapsed.add('group:ctm group');
+  const tree = h.view.render();
+  assert.ok(texts(tree).includes('CTM group'));
+  assert.ok(!texts(tree).includes('Server'));
+  assert.ok(!nodes(tree).some((n) => n.attrs.id === 'card-s1'));
+});
+
+test('ungrouped projects render as before', async () => {
+  const h = await cardHarness();
+  const tree = h.view.render();
+  assert.ok(!nodes(tree).some((n) => typeof n.attrs.id === 'string' && n.attrs.id.startsWith('group-head-')));
+});
+
 test('worktree cards are indented; only the selected one shows its border', async () => {
   const h = await cardHarness();
   const card = nodes(h.view.render()).find((n) => n.attrs.id === 'card-s1');
