@@ -21,7 +21,10 @@ Make the `orca` layout's chrome match Orca:
    repo's local *and* remote branches on this machine), branch name, Agent,
    **Create** (⌘↵) — instead of today's agent popup followed by Herdr's
    branch-only dialog.
-4. **Sidebar toggle on top**: the ◧ button sits top-left next to the window
+4. **Projects header** like Orca's (added 2026-11-17): a `Projects` title
+   row at the top of the sidebar list with collapse-all and four icons —
+   🔔 activity (with a badge), ⚙ options, 📁+ add project, + new worktree.
+5. **Sidebar toggle on top**: the ◧ button sits top-left next to the window
    buttons, also when the sidebar is hidden (today it's bottom-left in the
    strip).
 
@@ -55,9 +58,8 @@ Make the `orca` layout's chrome match Orca:
   issue `#1234` lookup), **Run on** (local only), **Advanced**, **Create
   more**, and fetching from the remote (branches are what this machine already
   has under `refs/remotes`; a `git fetch` is the person's job).
-- The Projects header icons, the Filter box, and grouping worktrees by state
-  (WORKING / NO RECENT UPDATE / DONE) — **open question, not in this spec**
-  (asked; awaiting the person's choice).
+- The Filter box and grouping worktrees by state (WORKING / NO RECENT UPDATE /
+  DONE) — the person chose only the header icons.
 
 ## Anti-goals
 
@@ -228,7 +230,45 @@ draws nothing without `props().overlay`):
 - `orca-new` is retired: `+` no longer opens it; it is removed from
   `install.sh` and the repo (the installed copy can be deleted by hand).
 
-### 6. Top sidebar toggle (`mods/orca-tabs`)
+### 6. Projects header (`mods/projects`)
+
+Orca's header (`orca/src/renderer/src/components/sidebar/SidebarHeader.tsx`,
+`sidebar-header-actions.tsx`, `worktree-list/controls/SidebarWorkspaceOptionsMenu.tsx`):
+title + collapse-all on the left; Bell (switch the sidebar to the agents
+activity view, badge = agents needing you), options (sliders), Add project
+(folder-plus), New workspace (+) on the right.
+
+- A 32 px row, fixed above the scrolling list: `Projects` (12 px, semibold,
+  `muted`) and a chevron that collapses all groups when any is open, else
+  expands all (writes `projects.collapsed`). Right side, 26 px icon buttons
+  (`muted`, hover `hover` + `foreground`):
+  1. **Activity** (bell, `svg("mods/workspace-chrome/…")` if a bell exists,
+     else text `🔔`-free glyph `◔`): toggles the list body between
+     **Projects** (today's list) and **Activity**: every agent from `agents()`
+     sorted blocked > done > working > idle, then most recent change first;
+     each row = icon, program name, space label (`label(space)`), status word
+     and time-in-status (reuse `renderAgent`); click → `pane.focus`. Badge:
+     count of `blocked` + `done` agents, a small `blocked`-coloured pill on
+     the icon, hidden at 0. Pressed state = `selected` background. The view
+     is remembered in `localStorage` `projects.view`. The title reads
+     `Activity` while in that view.
+  2. **Options** (sliders icon, `settings.svg` fallback) → popup
+     (`orca-project` mode `options`) with: **Collapse all projects**,
+     **Expand all projects**, **Sort projects: Order added | Name**,
+     **Hide main checkouts** (hides `★` rows; a project then shows only its
+     worktrees). Choices go through `setShared("orca.projects.options",
+     {...})`; `projects` stores them in `localStorage` `projects.options`
+     and publishes them on start.
+  3. **Add project** (`mods/workspace-chrome/folder-plus.svg`) → the existing
+     Add project popup (`orca-project` mode `add`). The bottom
+     `+ Add project` row is removed (Orca has only the header icon).
+  4. **New worktree** (`mods/workspace-chrome/plus.svg`) → Create worktree
+     dialog (section 5) for the active space's project, else the first repo
+     group; disabled (dim) when there are no repo groups.
+- Sorting by Name sorts repo groups by name (Other last, saved-only groups
+  mixed in); Order added = today's rule.
+
+### 7. Top sidebar toggle (`mods/orca-tabs`)
 
 - Copy `~/.config/herdr-app/mods/tabs/` (`main.js`, `mod.json` with title
   `"Tabs (orca)"`, its svgs) into the repo as `mods/orca-tabs/`; asset paths
@@ -275,6 +315,15 @@ draws nothing without `props().overlay`):
   chips and survives a restart); hide the sidebar (top toggle or cmd-b) → ◧
   appears top-left right after the window buttons, no gap; click → sidebar
   back; `main` layout unchanged.
+- `node --test`: activity sort (blocked > done > working > idle, then
+  newest change), badge count, group sort by name with Other last, hide
+  main checkouts drops `main` rows only.
+- Manual (Projects header): title row with four icons; badge appears when
+  Claude asks permission and clears when looked at; bell switches to the
+  Activity list and back (remembered after restart); options → collapse /
+  expand all, sort by name, hide main checkouts; folder-plus opens Add
+  project; + opens Create worktree for the active project; the bottom
+  `+ Add project` row is gone.
 - Manual (Create worktree): `+` on `orca-wt-scratch` → dialog with that
   project, base `main (default)`, Terminal/last agent; search a branch; pick
   `origin/<remote-only branch>` with no name → space opens on a local
