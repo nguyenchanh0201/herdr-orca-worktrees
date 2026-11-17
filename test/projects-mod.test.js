@@ -484,3 +484,25 @@ test('active card paints selected background once on card and not on inner title
   assert.equal(title?.attrs.bg, undefined);
 });
 
+test('worktree cards are indented and borderless', async () => {
+  const h = await cardHarness();
+  const card = nodes(h.view.render()).find((n) => n.attrs.id === 'card-s1');
+  assert.ok(card.attrs.ml > 0);
+  assert.equal(card.attrs.border, undefined);
+});
+
+test('status-less worktree shows the dim dot in a fixed slot', async () => {
+  const h = await cardHarness();
+  const title = nodes(h.view.render()).find((n) => n.attrs.id === 'space-s1');
+  const slot = title.kids.find((n) => texts(n).includes('●'));
+  assert.ok(slot, 'dim dot');
+  assert.ok(slot.attrs.w > 0);
+  assert.ok(!texts(title).includes('·'));
+});
+
+test('agent strip has no background until hover', async () => {
+  const h = await cardHarness();
+  const strip = nodes(h.view.render()).find((n) => n.attrs.id === 'strip-s1');
+  assert.equal(strip.attrs.bg, undefined);
+  assert.ok(strip.attrs.hover);
+});

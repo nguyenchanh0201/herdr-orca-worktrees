@@ -999,7 +999,7 @@ export default class Projects extends View {
 
         for (const g of displayGroups) {
           const isCollapsed = this.collapsed.has(g.key);
-          children.push(this.renderHeader(g, isCollapsed, t));
+          children.push(this.renderHeader(g, isCollapsed, t, children.length === 0));
           const rows = visibleRows(g, isCollapsed);
           for (const row of rows) {
             if (row.space?.active) {
@@ -1037,10 +1037,12 @@ export default class Projects extends View {
       .child(body);
   }
 
-  renderHeader(g, isCollapsed, t) {
+  renderHeader(g, isCollapsed, t, first = false) {
     const missing = g.kind === "repo" && g.exists === false;
     const head = h_flex()
       .id(`project-header-${g.key}`)
+      // More space above a project than between its worktrees.
+      .when(!first, (el) => el.mt(8))
       .h(28)
       .px(8)
       .gap(6)
@@ -1120,25 +1122,23 @@ export default class Projects extends View {
   renderRow(row, t, opts = {}) {
     const space = row.space;
     const sleeping = Boolean(row.sleeping);
-    const active = Boolean(space?.active);
     const hasAgents = Boolean(opts.hasAgents);
     const worktree = opts.worktree ?? row.worktree ?? "";
     const dot = sleeping
       ? svg("mods/projects/moon.svg").size(13).flex_none().text_color(t.dim)
       : space?.status
         ? div().flex_none().text_color(t[space.status] ?? t.unknown).child("●")
-        : div().flex_none().text_color(t.dim).child("·");
+        : div().flex_none().text_color(t.dim).child("●");
 
     const rowEl = h_flex()
       .id(space ? `space-${space.id}` : `sleep-${row.worktree}`)
       .h(28)
-      .pl(12)
+      .pl(8)
       .pr(8)
       .gap(6)
       .items_center()
       .rounded(6)
       .cursor_pointer()
-      .when(!active, (el) => el.hover((s) => s.bg(t.hover)))
       .when(sleeping, (el) =>
         el.on_click(() => {
           if (space) run("space.select", { id: space.id });
@@ -1166,7 +1166,8 @@ export default class Projects extends View {
           },
         });
       })
-      .child(dot)
+      // Fixed-width slot so every worktree name lines up, whatever the glyph.
+      .child(h_flex().w(12).flex_none().justify_center().child(dot))
       .child(
         div()
           .flex_1()
@@ -1221,13 +1222,14 @@ export default class Projects extends View {
 
     const card = v_flex()
       .id(`card-${cardKey}`)
-      .rounded(8)
-      .border(1)
-      .border_color(t.border)
-      .p(4)
-      .gap(4)
-      .mb(6)
+      // Indented under the project and borderless, so projects → worktrees read as a tree.
+      .ml(22)
+      .p(2)
+      .gap(2)
+      .mb(2)
+      .rounded(6)
       .when(active, (el) => el.bg(t.selected))
+      .when(!active, (el) => el.hover((s) => s.bg(t.hover)))
       .child(this.renderRow(row, t, opts));
 
     if (count === 0) return card;
@@ -1238,11 +1240,12 @@ export default class Projects extends View {
       const strip = h_flex()
         .id(`strip-${cardKey}`)
         .h(24)
+        .ml(18)
         .px(8)
         .gap(6)
         .items_center()
         .rounded(6)
-        .bg(t.hover)
+        .hover((s) => s.bg(t.hover))
         .cursor_pointer()
         .on_click((_e, cx) => this.toggleAgents(foldKey, cx));
 
