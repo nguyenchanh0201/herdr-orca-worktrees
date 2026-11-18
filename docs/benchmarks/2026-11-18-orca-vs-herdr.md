@@ -6,6 +6,7 @@ Measured on 2026-11-18 on a MacBook with 8 cores and 16 GB of RAM, running macOS
 
 - **Orca's own processes use about 2.75× the memory of Herdr's:** about **920 MB** against **333 MB**, with both apps open and idle.
 - **CPU at idle is about the same,** around 5–6% of one core each.
+- **Heavy terminal output costs Herdr about 1.7× Orca's CPU** (≈ 9.9 s against ≈ 5.7 s for 21 MB), because Herdr's terminal service passes output through three processes. The window itself draws as cheaply as Orca's, and our mods add nothing measurable (see below).
 - **An agent costs the same in either app,** because it's the same `claude` program: about 320–360 MB per Claude session.
 - **The app is a small share of the total.** The agents inside the terminals dominate: about 3.5–3.9 GB per app here.
 
@@ -56,17 +57,50 @@ Orca injects its own Claude plugin, `orca-agent-view`, which may explain the ext
 3. **Orca kept terminals running after it was closed.** Before Orca was opened, its two `orca-terminal-host` services still held **17 terminals, 68 processes and about 3.5 GB**. Those were old agents and dev servers from earlier sessions, and they're easy to forget about. Herdr's terminals also outlive its window (`hc`), but they show up in the Projects sidebar and the Resource Manager.
 4. **Idle CPU is similar, around 5–6% of one core.** Neither app is a CPU problem at rest.
 
+## Heavy output: `seq 1 3000000` (about 21 MB)
+
+[`burst.js`](burst.js) prints `seq 1 3000000` into a plain shell terminal in the same folder.
+- **Visibility:** the terminal is on screen, and its app is in front.
+- **What's counted:** the CPU time the app's own processes spend (window plus terminal service) from the moment the command is sent until 3 s after `seq` ends, plus the wall time until `seq` ends.
+- **Order:** the apps were tested one after the other, never at the same time. This Claude session was idle while each ran.
+
+| | Runs | Wall time to finish | App CPU time |
+|---|---|---|---|
+| **Herdr**, `orca` layout (our mods) | 5 | 3.5–5.4 s | **9.1–11.3 s** (≈ 9.9) |
+| **Herdr**, stock `main` layout (no mods) | 2 | 3.8–4.8 s | 9.4–10.5 s (≈ 10.0) |
+| **Orca** | 5 | 2.9–3.8 s | **4.3–7.7 s** (≈ 5.7) |
+
+**Where the CPU goes,** averaged per run:
+
+| Herdr | CPU s | Orca | CPU s |
+|---|---|---|---|
+| `Herdr` (window, drawing) | 3.6–3.8 | `Orca` main + renderer + GPU | 4.4–5.0 |
+| `herdr-core` server | 2.6–2.7 | `orca-terminal-host` | 2.5 |
+| `herdr-core hold` (keeps the terminals) | 2.4–2.6 | | |
+| `herdr-core connect` (the app's link) | 0.7–0.8 | | |
+
+**What it means:**
+
+- **Herdr spends about 1.7× Orca's CPU on heavy output** (≈ 9.9 s against ≈ 5.7 s), and finishes a little slower.
+- **The window isn't the difference.** Herdr's window draws the output for slightly *less* CPU than Orca's Electron processes, about 3.7 s against 4.4–5 s.
+- **The terminal service is.** Herdr's output passes through three `herdr-core` processes (hold → server → connect), which cost about 5.8 s together. Orca's single terminal host costs 2.5 s. This is Herdr's design: terminals that survive the app, readable through `hc read`, with an agent-status model. It's not something these mods can change.
+- **Our mods add nothing measurable.** The stock layout cost the same as the `orca` layout (≈ 10.0 s against ≈ 9.9 s).
+- **Orca's runs varied more** (4.3–7.7 s). The first round was lower, perhaps because Orca was still settling after being brought to the front. The second round (7.3–7.7 s) is closer to Herdr's.
+
+For everyday use this rarely matters: agents print in short bursts, not 21 MB at a time. It would matter for very chatty dev servers or long logs.
+
 ## Limits
 
 - **Not a clean machine.** Both apps carried the person's real workspaces: 13–18 terminals with live agents. The app-only numbers are still comparable; the "inside" numbers are not a like-for-like workload.
-- **Rendering under load wasn't tested.** For example, `seq 1 3000000` in a visible terminal in each app would show which one draws output more cheaply. It needs the terminal on screen in both apps at once, which would have taken over the person's window.
 - **One run each.** Memory moved by about ±60 MB between Orca runs, which is garbage collection and caches.
 - **The Resource Manager chip shows RSS ("Σ RSS"),** so it undercounts Herdr's own memory (about 81 MB shown against 333 MB real). Switching it to `phys_footprint` (via `footprint`, or Orca's approach) would make it match Activity Monitor.
 
 ## Rerun it
 
 ```bash
-node docs/benchmarks/measure.js 30 my-label   # prints JSON for both apps
+node docs/benchmarks/measure.js 30 my-label        # RAM and CPU of both apps, as JSON
+node docs/benchmarks/burst.js herdr <t> 3000000 3   # heavy output in a Herdr terminal (hc address)
+node docs/benchmarks/burst.js orca <handle> 3000000 3  # same in Orca (orca terminal handle)
 ```
 
 Run it with nothing streaming in either app, to get quiet CPU numbers.
