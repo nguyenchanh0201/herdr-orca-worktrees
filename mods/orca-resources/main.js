@@ -14,6 +14,7 @@ import {
 import config from "./config.js";
 import {
   parsePs,
+  parseProcessSnapshot,
   subtreeTotals,
   herdrTotals,
   buildSnapshot,
@@ -48,6 +49,7 @@ export default class OrcaResources extends View {
   init(_p, cx) {
     this.snapshot = shared("orca.resources") ?? null;
     this.sampling = false;
+    this.processFormat = null;
     this.lastSampleAt = 0;
     this.lastRefresh = shared("orca.resources.refresh")?.at ?? null;
     this.termCache = new Map();
@@ -133,25 +135,51 @@ export default class OrcaResources extends View {
     return meta;
   }
 
+  async collectProcesses() {
+    if (this.processFormat !== "legacy") {
+      const res = await exec("ps", ["-axo", "pid=,ppid=,pcpu=,rss=,comm="], { timeout: 10000 });
+      if (res?.code === 0) {
+        const snapshot = parseProcessSnapshot(res.stdout);
+        if (snapshot) {
+          this.processFormat = "combined";
+          return snapshot;
+        }
+        if (this.processFormat === "combined") throw new Error("Unusable combined process scan");
+      } else if (/keyword not found|unknown (?:user-defined )?(?:format|keyword|specifier)|bad (?:format|keyword|specifier)|unsupported (?:format|keyword|specifier)/i.test(res?.stderr ?? "")) {
+        this.processFormat = "legacy";
+      } else {
+        throw new Error("Combined process scan failed");
+      }
+    }
+
+    const [psRes, commRes] = await Promise.all([
+      exec("ps", ["-axo", "pid=,ppid=,pcpu=,rss="], { timeout: 10000 }),
+      exec("ps", ["-axo", "pid=,comm="], { timeout: 10000 }),
+    ]);
+    if (psRes?.code !== 0 || commRes?.code !== 0) throw new Error("Legacy process scan failed");
+    const procs = parsePs(psRes.stdout);
+    const commands = parseCommands(commRes.stdout);
+    if (!procs.size || !commands.size) throw new Error("Unusable legacy process scan");
+    this.processFormat = "legacy";
+    return { procs, commands };
+  }
+
   sample(cx) {
     if (this.sampling) return;
     this.sampling = true;
 
     cx.spawn(async (cx) => {
       try {
-        const [psRes, commRes, hcRes] = await Promise.all([
-          exec("ps", ["-axo", "pid=,ppid=,pcpu=,rss="], { timeout: 10000 }),
-          exec("ps", ["-axo", "pid=,comm="], { timeout: 10000 }),
+        const [processes, terminalsResult] = await Promise.allSettled([
+          this.collectProcesses(),
           exec("hc", ["ls", "--json"], { timeout: 5000 }),
         ]);
+        if (processes.status !== "fulfilled" || terminalsResult.status !== "fulfilled" ||
+            terminalsResult.value?.code !== 0) return;
 
-        const procs = parsePs(psRes?.stdout ?? "");
-        const commands = parseCommands(commRes?.stdout ?? "");
-        let hcEntries = [];
-        try {
-          const parsed = JSON.parse((hcRes?.stdout || "").trim() || "{}");
-          if (Array.isArray(parsed.terminals)) hcEntries = parsed.terminals;
-        } catch {}
+        const { procs, commands } = processes.value;
+        const hcEntries = JSON.parse(terminalsResult.value.stdout)?.terminals;
+        if (!Array.isArray(hcEntries)) return;
 
         const liveEntries = hcEntries.filter(
           (e) => e && e.state === "live" && typeof e.address === "string" && !e.address.includes("/"),
