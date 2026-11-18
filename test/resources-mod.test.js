@@ -1390,3 +1390,59 @@ test('resources tab End button confirms and kills terminal without focusing it',
 
 
 
+test('folded projects defer worktree sorting until expanded', async () => {
+  const snap = sampleSnap();
+  const [project] = snap.projects;
+  const [worktree] = project.worktrees;
+  const smaller = { key: '/repos/small', name: 'small', cpu: 0, rss: 0, terminals: [] };
+  project.worktrees.unshift(smaller);
+  const h = await panelHarness({
+    shared: [['orca.resources', snap]],
+    storage: [['resources.folded', JSON.stringify([`p:${project.key}`])]],
+  });
+
+  const folded = nodes(h.view.render(h.cx));
+  const header = folded.find((n) => n.attrs.id === `proj-${project.key}`);
+  assert.deepEqual(texts(header), ['▸', 'HERDR-ORCA-WORKTREES', '3.0%', '2.09 GB']);
+  assert.equal(folded.some((n) => n.attrs.id?.startsWith('wt-')), false);
+
+  header.attrs.on_click({}, h.cx);
+  const expanded = nodes(h.view.render(h.cx));
+  assert.deepEqual(
+    expanded.filter((n) => n.attrs.id?.startsWith('wt-')).map((n) => n.attrs.id),
+    [`wt-${worktree.key}`, `wt-${smaller.key}`],
+  );
+  assert.equal(h.view.orderCache.has(`p:${project.key}`), true);
+
+  header.attrs.on_click({}, h.cx);
+  h.view.orderCache.clear();
+  h.view.render(h.cx);
+  assert.equal(h.view.orderCache.has(`p:${project.key}`), false, 'folded project sorted its worktrees');
+});
+
+test('folded worktrees defer terminal sorting until expanded', async () => {
+  const snap = sampleSnap();
+  const [worktree] = snap.projects[0].worktrees;
+  const h = await panelHarness({
+    shared: [['orca.resources', snap]],
+    storage: [['resources.folded', JSON.stringify([`w:${worktree.key}`])]],
+  });
+
+  const folded = nodes(h.view.render(h.cx));
+  const header = folded.find((n) => n.attrs.id === `wt-${worktree.key}`);
+  assert.deepEqual(texts(header), ['▸', 'feat/projects-sidebar', '3.0%', '2.09 GB']);
+  assert.equal(folded.some((n) => n.attrs.id?.startsWith('res-term-')), false);
+
+  header.attrs.on_click({}, h.cx);
+  const expanded = nodes(h.view.render(h.cx));
+  assert.deepEqual(
+    expanded.filter((n) => n.attrs.id?.startsWith('res-term-')).map((n) => n.attrs.id),
+    ['res-term-t2', 'res-term-t1'],
+  );
+  assert.equal(h.view.orderCache.has(`w:${worktree.key}`), true);
+
+  header.attrs.on_click({}, h.cx);
+  h.view.orderCache.clear();
+  h.view.render(h.cx);
+  assert.equal(h.view.orderCache.has(`w:${worktree.key}`), false, 'folded worktree sorted its terminals');
+});
