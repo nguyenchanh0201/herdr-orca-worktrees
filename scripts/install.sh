@@ -1,22 +1,33 @@
 #!/usr/bin/env bash
+# Install the Orca mods into Herdr.app.
+#   bash scripts/install.sh            full install: npm deps, every mod, the "orca" layout, checks
+#   bash scripts/install.sh projects   reinstall just these mods (no layout, no checks)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 HERDR_APP_HOME="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
-NODE_BIN="$(command -v node)"
+NODE_BIN="$(command -v node || true)"
 CLI_PATH="$REPO/bin/orca-wt.js"
 
 if [[ -z "$NODE_BIN" || ! -x "$NODE_BIN" ]]; then
-  echo "node not found on PATH" >&2
+  echo "node not found on PATH (install Node 20+ first)" >&2
   exit 1
 fi
 
+FULL=0
 MODS=("$@")
 if [[ ${#MODS[@]} -eq 0 ]]; then
+  FULL=1
   MODS=(orca-setup orca-remove projects orca-worktree orca-project orca-usage orca-usage-panel orca-tabs orca-resources orca-resources-panel)
 fi
 
-mkdir -p "$HERDR_APP_HOME/mods"
+# The orca-wt CLI needs its npm dependency (yaml).
+if [[ ! -d "$REPO/node_modules/yaml" ]]; then
+  echo "installing npm dependencies…"
+  (cd "$REPO" && npm install --omit=dev --no-audit --no-fund >/dev/null)
+fi
+
+mkdir -p "$HERDR_APP_HOME/mods" "$HERDR_APP_HOME/layouts"
 
 for m in "${MODS[@]}"; do
   src="$REPO/mods/$m"
@@ -44,4 +55,35 @@ for m in "${MODS[@]}"; do
     rsync -a "$src/" "$tmp/"
     mv "$tmp" "$dest"
   fi
+  echo "installed mod: $m"
 done
+
+[[ $FULL -eq 1 ]] || exit 0
+
+# The layout that places the mods. Never overwrite one the person already has.
+LAYOUT="$HERDR_APP_HOME/layouts/orca.json"
+NEW_LAYOUT=0
+if [[ -e "$LAYOUT" ]]; then
+  echo "kept your existing layouts/orca.json (repo copy: $REPO/layouts/orca.json)"
+else
+  cp "$REPO/layouts/orca.json" "$LAYOUT"
+  NEW_LAYOUT=1
+  echo "installed layout: orca"
+fi
+
+if command -v herdr-app >/dev/null 2>&1; then
+  failed=0
+  for m in "${MODS[@]}"; do
+    herdr-app check "$HERDR_APP_HOME/mods/$m" >/dev/null 2>&1 || { echo "check FAILED: $m (run: herdr-app check $HERDR_APP_HOME/mods/$m)" >&2; failed=1; }
+  done
+  [[ $failed -eq 0 ]] && echo "all mods passed herdr-app check"
+  # Only switch the running app for a fresh layout in the default home.
+  if [[ $NEW_LAYOUT -eq 1 && "$HERDR_APP_HOME" == "$HOME/.config/herdr-app" ]]; then
+    herdr-app do layout.switch --name orca >/dev/null 2>&1 \
+      && echo "switched Herdr to the orca layout" \
+      || echo "open Herdr, then press ctrl-shift-l until the orca layout shows"
+  fi
+  exit $failed
+else
+  echo "herdr-app not on PATH: skipped checks. Open Herdr and press ctrl-shift-l until the orca layout shows."
+fi

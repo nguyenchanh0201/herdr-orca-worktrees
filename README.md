@@ -1,20 +1,101 @@
 # herdr-orca-worktrees
 
-Orca-style worktree management, usage tracking, and resource monitoring mods for Herdr.
+Orca-style chrome for [Herdr.app](https://herdr.dev): a projects sidebar with worktree cards, sleep and wake, project icons and groups, "Open in" editors, usage meters, and a resource manager. All of it is Herdr **mods** plus a small Node CLI (`orca-wt`). Herdr itself isn't changed.
+
+![Herdr with the orca layout](docs/screenshots/overview.png)
+
+## Features
+
+<img src="docs/screenshots/sidebar.png" alt="Projects sidebar" width="260" align="right">
+
+### Projects sidebar
+
+- **A tree of project groups, projects and worktrees.** Each project shows its GitHub avatar, a repo icon or a coloured letter. You can **Rename…** or **Change icon…** from the right-click menu.
+- **Worktree cards.** The selected card is outlined.
+  - The `main` badge marks the main checkout.
+  - The agents fold into one strip that shows the most urgent status (blocked `!`, working `●`, done `✓`, idle `○`).
+  - Click the strip for the list. Each row reads like "Working - Claude Code", and clicking it jumps to that agent.
+- **New worktree with an agent:** use `+` on a project header. Agents start with full access.
+- **Sleep and wake:** sleep quits a worktree's agents and remembers how to resume them (🌙). Wake brings them back in the same conversations. A half-typed draft is never lost.
+- **Right-click menus:**
+  - **Open in ›** VS Code, Zed, Xcode, Finder and more, plus **Customize apps…**.
+  - **Project Group ›** to put related repos in a group that folds as one.
+
+<br clear="right">
+
+### Usage meters and resource manager
+
+![Status bar](docs/screenshots/status-bar.png)
+
+**Usage meters (left):** the bottom bar shows how much of your Claude, Codex and Antigravity plan you've used, and when each window resets. Click it for an Orca-style popup with Detailed or Compact rows.
+
+<img src="docs/screenshots/resource-manager.png" alt="Resource Manager" width="320" align="right">
+
+**Resource chip (right):** `▭ 769 MB · >_ 13` is the total memory of every terminal plus Herdr itself, and the number of terminals. Click it for the **Resource Manager**:
+
+- **Resources:**
+  - CPU and memory for each project, worktree and terminal, sortable by any column.
+  - A 2-minute memory graph for each worktree.
+  - Click a terminal to jump to it.
+- **PTYs:** every Herdr terminal with its details. Jump to one, or **End** one or several (it always asks first).
+
+It samples `ps` every 2 seconds while open and every 5 seconds otherwise, and it never calls the Orca app.
+
+<br clear="right">
+
+### Also included
+
+- **Create worktree** dialog, with a local and remote branch picker and `orca.yaml` setup scripts.
+- **Remove worktree** dialog, with archive handling.
+- Orca-style tabs.
+
+## Requirements
+
+- **macOS** with **Herdr.app** installed and opened once, so `~/.config/herdr-app` exists. `herdr-app` and `hc` come with it.
+- **Node 20 or newer** on your `PATH` (`node --version`).
+- **git.**
+- **Optional:**
+  - the `claude`, `codex` and `agy` CLIs, signed in, for the usage meters and for agents in new worktrees;
+  - `gh` (GitHub CLI), signed in, so worktree names drop your `<login>/` prefix.
 
 ## Install
 
 ```bash
+git clone git@github.com:nguyenchanh0201/herdr-orca-worktrees.git
+cd herdr-orca-worktrees
 bash scripts/install.sh
 ```
 
-## One-time layout setup
+That's all. The script:
 
-`scripts/install.sh` does not modify your layout files. To show the Resource Manager chip in the bottom status strip, add the `orca-resources` block to the `orca-strip` row in `~/.config/herdr-app/layouts/orca.json`, between `orca-usage` and `orca-setup`:
+1. Installs the CLI's npm dependency (`yaml`) if it's missing.
+2. Copies every mod in `mods/` to `~/.config/herdr-app/mods/`. It writes each mod a `config.js` holding the paths of your `node` and of `bin/orca-wt.js`.
+3. Copies `layouts/orca.json` to `~/.config/herdr-app/layouts/` if you don't have one, and **never overwrites** an existing one.
+4. Runs `herdr-app check` on every mod.
+5. Switches the open Herdr window to the `orca` layout, if the layout was just installed.
 
-```json
-{"id": "orca-resources", "type": "block", "size": {"px": 150}, "content": {"mod": "orca-resources"}}
+You should see `all mods passed herdr-app check`. If Herdr wasn't open, open it and press **ctrl-shift-l** until the orca layout shows. That key cycles through layouts, so you can always switch back to your old one.
+
+## Check it worked
+
+- **Left sidebar:** shows **Projects**. Use `+` on a project header to create a worktree.
+- **Bottom bar:** shows usage meters (`5h … · 7d …`) and the resource chip (`▭ 2.14 GB · >_ 5`).
+- **Right-click a worktree card:** you get Sleep, Open in ›, and the rest.
+
+## Update
+
+```bash
+git pull
+bash scripts/install.sh
 ```
+
+To reinstall just some mods, which is faster when you're working on one, name them:
+
+```bash
+bash scripts/install.sh projects orca-project
+```
+
+That form skips the layout and the checks. Run `herdr-app check ~/.config/herdr-app/mods/<mod>` yourself afterwards.
 
 ## Rust CLI (optional)
 
@@ -25,3 +106,51 @@ bash scripts/install-rust.sh
 ```
 
 Switch back to the Node CLI with `bash scripts/install.sh`.
+
+## Uninstall
+
+```bash
+cd ~/.config/herdr-app
+rm -rf mods/{orca-setup,orca-remove,projects,orca-worktree,orca-project,orca-usage,orca-usage-panel,orca-tabs,orca-resources,orca-resources-panel}
+rm layouts/orca.json
+```
+
+Then press ctrl-shift-l to get back to another layout. Your saved data (below) stays unless you delete it as well.
+
+## Where your data lives
+
+| What | Where |
+|---|---|
+| Saved projects, names, icon choices, groups | `~/.local/state/orca-worktrees/projects.json` |
+| "Open in" app choice | `~/.local/state/orca-worktrees/apps.json` |
+| Downloaded project icons | `~/.config/herdr-app/data/project-icons/` |
+| A worktree's sleeping agents | inside that worktree's git folder |
+
+## Troubleshooting
+
+- **A mod shows nothing, or Herdr says it failed:** run `herdr-app check ~/.config/herdr-app/mods/<mod>`. It names the file and the error.
+- **The sidebar shows no projects after you add one from a terminal:** run `bash scripts/install.sh projects`, which reloads it.
+- **Everything broke after a Node upgrade (for example with nvm):** each mod's `config.js` holds the old `node` path, so run `bash scripts/install.sh` again.
+- **Your layout didn't change after an update:** the script never overwrites `layouts/orca.json`. To take the repo's version, first back yours up, for example by moving `~/.config/herdr-app/layouts/orca.json` to `orca.json.bak`, then rerun the install.
+
+## For agents setting this up
+
+Do these in order, and stop and report if any step fails:
+
+1. Check the requirements:
+   - `node --version` is 20 or newer;
+   - `git --version` works;
+   - `ls ~/.config/herdr-app` exists. If it doesn't, ask the person to open Herdr.app once.
+2. From the repo root, run `bash scripts/install.sh`. Expected: the last lines are `installed layout: orca`, or `kept your existing layouts/orca.json`, and then `all mods passed herdr-app check`.
+3. If a check failed, run the `herdr-app check …` command it printed and fix what it names. Don't edit `~/.config/herdr-app/mods/` directly. Edit `mods/` in the repo and reinstall.
+4. Confirm with `herdr-app shot /tmp/herdr.png` and look at the image. The Projects sidebar should be on the left and the usage strip and resource chip at the bottom. If it still shows another layout, run `herdr-app do layout.switch --name orca`.
+5. Never overwrite the person's existing `~/.config/herdr-app/layouts/orca.json` without asking.
+
+## Develop
+
+```bash
+npm install
+npm test        # node --test
+```
+
+API docs for mods are in `~/.config/herdr-app/AGENTS.md`, `herdr.d.ts` and `gpui-kit.d.ts`. Designs and build plans are in `docs/superpowers/`.
