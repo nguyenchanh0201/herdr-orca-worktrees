@@ -8,6 +8,7 @@ pub struct GitInfo {
     pub worktree: PathBuf,
     pub primary: PathBuf,
     pub git_dir: PathBuf,
+    pub common_dir: PathBuf,
     pub linked: bool,
 }
 
@@ -33,7 +34,7 @@ pub fn git_info(folder: &str) -> Option<GitInfo> {
     let common_dir = std::fs::canonicalize(lines[2]).ok()?;
     let primary = std::fs::canonicalize(common_dir.parent()?).ok()?;
     let linked = git_dir != common_dir;
-    Some(GitInfo { worktree, primary, git_dir, linked })
+    Some(GitInfo { worktree, primary, git_dir, common_dir, linked })
 }
 
 /// True once, for the first caller within `window_ms` of the git dir's creation: it drops an
