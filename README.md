@@ -123,7 +123,7 @@ From the release checkout, run `bash scripts/install-rust.sh ~/.local/bin/orca-w
 
 ```bash
 cd ~/.config/herdr-app
-rm -rf mods/{orca-setup,orca-remove,projects,orca-worktree,orca-project,orca-usage,orca-usage-panel,orca-tabs,orca-resources,orca-resources-panel}
+rm -rf mods/{orca-setup,orca-remove,projects,orca-worktree,orca-project,orca-usage,orca-usage-panel,orca-tabs,orca-resources,orca-resources-panel} orca-icons
 rm layouts/orca.json
 ```
 

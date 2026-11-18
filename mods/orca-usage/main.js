@@ -1,6 +1,11 @@
-import { View, div, svg, image } from "gpui-kit";
+import { View } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { theme, knownAgents, exec, openOverlay, closeOverlay, shared, setShared, checking } from "herdr";
+import { knownAgents, exec, openOverlay, closeOverlay, shared, setShared, checking } from "herdr";
+import { SPACE, FONT } from "./ui/tokens.js";
+import { text } from "./ui/atoms/text.js";
+import { icon } from "./ui/atoms/icon.js";
+import { progressBar } from "./ui/atoms/progress-bar.js";
+import { iconButton } from "./ui/molecules/icon-button.js";
 import config from "./config.js";
 import { chipText } from "./format.js";
 import { merge } from "./merge.js";
@@ -9,6 +14,20 @@ import { merge } from "./merge.js";
 const PANEL_W = 648;
 // A press this soon after the panel closed is the click that closed it, not a request to reopen.
 const PANEL_REOPEN_GUARD_MS = 300;
+// The panel is as tall as the room above the strip minus PANEL_TOP_MARGIN (never under PANEL_MIN_H),
+// and ends PANEL_GAP_ABOVE_STRIP above the strip.
+const PANEL_MIN_H = 200;
+const PANEL_TOP_MARGIN = 12;
+const PANEL_GAP_ABOVE_STRIP = 4;
+// Usage older than this is drawn dim.
+const STALE_AFTER_MS = 30 * 60000;
+// Room one chip needs in the strip, compact and detailed, and what the strip keeps for "Used" and
+// the refresh button; chips beyond what fits are dropped, least used first.
+const CHIP_W_COMPACT = 115;
+const CHIP_W_DETAILED = 210;
+const STRIP_RESERVED_W = 80;
+const CHIP_BAR_W = 48;
+const REFRESH_ICON = "orca-icons/refresh.svg";
 
 function maxUsed(p) {
   return p.windows?.length ? Math.max(...p.windows.map((w) => w.usedPercent)) : -1;
@@ -129,20 +148,38 @@ export default class OrcaUsage extends View {
     });
   }
 
+  // One provider in the strip: icon, a mini bar when detailed, the headline text, a warning on error.
+  renderChip(p, now, tone) {
+    const ic = this.icons[p.id];
+    const iconEl = ic?.icon
+      ? icon(ic.icon, { size: "sm", tone, tint: Boolean(ic.tint) })
+      : text(p.id, { tone });
+    const pct = Math.min(100, Math.max(0, maxUsed(p)));
+    return h_flex()
+      .items_center()
+      .gap(SPACE.sm)
+      .flex_none()
+      .child(iconEl)
+      .when(this.mode === "detailed" && p.windows?.length > 0, (el) =>
+        el.child(progressBar(pct, { tone: "muted", width: CHIP_BAR_W })),
+      )
+      .child(text(chipText(p, this.mode, now), { tone }))
+      .when(p.status === "error", (el) => el.child(text("⚠", { tone: "blocked" })));
+  }
+
   render(cx) {
     if (!checking()) this.checkRefresh(cx);
-    const t = theme();
     const now = Date.now();
-    const stale = this.fetchedAt > 0 && now - this.fetchedAt > 30 * 60000;
-    const textColor = stale ? t.dim : t.muted;
+    const stale = this.fetchedAt > 0 && now - this.fetchedAt > STALE_AFTER_MS;
+    const tone = stale ? "dim" : "muted";
 
     let chips =
       this.providers.length === 0 && this.fetching
         ? ["claude", "codex", "agy"].map((id) => ({ id, windows: [] }))
         : this.providers.filter((p) => p.status !== "unavailable");
 
-    const perChip = this.mode === "detailed" ? 210 : 115;
-    const maxChips = Math.max(0, Math.floor((this.width - 80) / perChip));
+    const perChip = this.mode === "detailed" ? CHIP_W_DETAILED : CHIP_W_COMPACT;
+    const maxChips = Math.max(0, Math.floor((this.width - STRIP_RESERVED_W) / perChip));
     if (chips.length > maxChips) {
       const kept = new Set(
         [...chips]
@@ -157,9 +194,9 @@ export default class OrcaUsage extends View {
       .id("orca-usage")
       .size_full()
       .items_center()
-      .px(10)
-      .gap(10)
-      .text_size(12)
+      .px(SPACE.lg)
+      .gap(SPACE.lg)
+      .text_size(FONT.md)
       .on_size_change((e, cx) => {
         if (e?.width && e.width !== this.width) {
           this.width = e.width;
@@ -186,79 +223,35 @@ export default class OrcaUsage extends View {
           openOverlay({ mod: "orca-usage-panel", kind: "popup", frame: "none", width: PANEL_W, height: 0.85 });
           return;
         }
-        const height = Math.max(200, Math.round(b.y - 12));
+        const height = Math.max(PANEL_MIN_H, Math.round(b.y - PANEL_TOP_MARGIN));
         openOverlay({
           mod: "orca-usage-panel",
           kind: "popup",
           frame: "none",
           width: PANEL_W,
           height,
-          at: { x: Math.round(b.x), y: Math.round(b.y - 4 - height) },
+          at: { x: Math.round(b.x), y: Math.round(b.y - PANEL_GAP_ABOVE_STRIP - height) },
           props: { height },
         });
       })
-      .child(div().flex_none().text_color(t.dim).child("Used"))
+      .child(text("Used", { tone: "dim" }).flex_none())
       .child(
         h_flex()
           .items_center()
-          .gap(12)
+          .gap(SPACE.xl)
           .cursor_pointer()
-          .children(
-            chips.map((p) => {
-              const ic = this.icons[p.id];
-              const iconEl = ic?.icon
-                ? ic.tint
-                  ? svg(ic.icon).size(13).flex_none().text_color(textColor)
-                  : image(ic.icon).size(13).flex_none()
-                : div().text_color(textColor).child(p.id);
-              const maxPct = maxUsed(p);
-              return h_flex()
-                .items_center()
-                .gap(5)
-                .flex_none()
-                .child(iconEl)
-                .when(this.mode === "detailed" && p.windows?.length > 0, (el) =>
-                  el.child(
-                    div()
-                      .w(48)
-                      .h(6)
-                      .rounded(3)
-                      .bg(t.border)
-                      .overflow_hidden()
-                      .child(
-                        div()
-                          .h_full()
-                          .w(Math.round((48 * Math.min(100, Math.max(0, maxPct))) / 100))
-                          .bg(t.muted),
-                      ),
-                  ),
-                )
-                .child(div().text_color(textColor).child(chipText(p, this.mode, now)))
-                .when(p.status === "error", (el) =>
-                  el.child(div().text_color(t.blocked).child("⚠")),
-                );
-            }),
-          ),
+          .children(chips.map((p) => this.renderChip(p, now, tone))),
       )
       .child(
-        div()
-          .id("usage-refresh")
-          .flex_none()
-          .p(2)
-          .rounded(4)
-          .cursor_pointer()
-          .text_color(t.muted)
-          .hover((s) => s.text_color(t.foreground).bg(t.hover))
-          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .on_click((_e, cx) => {
-            cx.stop_propagation();
-            setShared("orca.usage.refresh", { at: Date.now(), force: true });
-          })
-          .child(
-            this.fetching
-              ? svg("mods/orca-usage/refresh.svg").size(13).spin(900)
-              : svg("mods/orca-usage/refresh.svg").size(13),
-          ),
+        iconButton({
+          id: "usage-refresh",
+          src: REFRESH_ICON,
+          busy: this.fetching,
+          pad: "2xs",
+          hoverBg: "hover",
+          isolated: true,
+          onClick: () => setShared("orca.usage.refresh", { at: Date.now(), force: true }),
+        }),
       );
   }
 }
