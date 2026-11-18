@@ -1446,3 +1446,32 @@ test('folded worktrees defer terminal sorting until expanded', async () => {
   h.view.render(h.cx);
   assert.equal(h.view.orderCache.has(`w:${worktree.key}`), false, 'folded worktree sorted its terminals');
 });
+
+test('clears stale repo grouping and watch when a live worktree becomes an ordinary folder', async () => {
+  const watches = watchFixture();
+  let isRepo = true;
+  const h = await watchHarness(['/linked'], watches, () => (
+    isRepo
+      ? ok('{"primary":"/app","gitCommonDir":"/app/.git"}')
+      : ok('{"error":"not a git repository"}')
+  ));
+  assert.deepEqual(watches.calls.map(({ path }) => path), ['/app/.git/worktrees']);
+  assert.equal(h.state.shared.get('orca.resources').projects[0].key, '/app');
+
+  isRepo = false;
+  watches.calls[0].resolve(['/app/.git/worktrees/linked/gitdir']);
+  await h.flush();
+  await sampleAt(h, 300);
+
+  const snap = h.state.shared.get('orca.resources');
+  assert.equal(snap.projects[0].key, '/linked');
+  assert.equal(snap.projects[0].name, 'linked');
+  assert.equal(watches.calls.length, 2);
+  assert.equal(watches.calls[1].canceled, true);
+  assert.equal(h.view.repoWatches.size, 0);
+
+  h.state.execs.length = 0;
+  await sampleAt(h, 5300);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 0);
+  assert.equal(h.state.shared.get('orca.resources').projects[0].key, '/linked');
+});

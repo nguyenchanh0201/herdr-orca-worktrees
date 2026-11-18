@@ -247,7 +247,7 @@ export default class OrcaResources extends View {
           });
           return result;
         }
-        if (parsed?.error === "not a git repository" && !cached?.result) {
+        if (parsed?.error === "not a git repository") {
           this.repoCache.set(place, { result: null, freshAt: Date.now(), retryAt: 0 });
           return fallback;
         }
