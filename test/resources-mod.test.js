@@ -463,6 +463,8 @@ test('repo watch bursts rearm without sampling and refresh only their root after
       : ok('{"primary":"/app","gitCommonDir":"/app/.git"}')
   ));
   assert.deepEqual(watches.calls.map(({ path }) => path), [root, '/other/.git/worktrees']);
+  await sampleAt(h, 1);
+  h.state.execs.length = 0;
   const total = h.state.execs.length;
   h.state.now = 100;
   watches.calls[0].resolve([root + '/linked/gitdir']);
@@ -475,17 +477,19 @@ test('repo watch bursts rearm without sampling and refresh only their root after
   assert.equal(h.state.execs.length, total);
   await sampleAt(h, 449);
   const prefix = 'node cli info ';
-  assert.deepEqual(metadataCommands(h, prefix), [prefix + '/app', prefix + '/linked', prefix + '/other']);
+  assert.deepEqual(metadataCommands(h, prefix), []);
   await sampleAt(h, 450);
-  assert.deepEqual(metadataCommands(h, prefix), [
-    prefix + '/app', prefix + '/app', prefix + '/linked', prefix + '/linked', prefix + '/other',
+  assert.deepEqual(metadataCommands(h, prefix), [prefix + '/app', prefix + '/linked']);
+  watches.calls[3].resolve([
+    '/app/.git/refs/heads/main', root + '/linked/index.lock', root + '/linked/HEAD',
+    root + '/linked/ORIG_HEAD', root + '/linked/COMMIT_EDITMSG', root + '/linked/MERGE_HEAD',
+    root + '/linked/rebase-merge/head-name',
   ]);
-  watches.calls[3].resolve(['/app/.git/refs/heads/main', root + '/linked/index.lock']);
   await Promise.resolve();
   await sampleAt(h, 1000);
-  assert.equal(metadataCommands(h, prefix).length, 5);
+  assert.equal(metadataCommands(h, prefix).length, 2);
   await sampleAt(h, 61000);
-  assert.equal(metadataCommands(h, prefix).length, 5);
+  assert.equal(metadataCommands(h, prefix).length, 2);
 
   h.live.listing = terminalListing([{ address: '2', pid: 6, labels: { 'herdr.space': '2' } }]);
   await sampleAt(h, 62000);
@@ -513,6 +517,14 @@ test('revalidates older CLI metadata and retries rejected or empty repo watches 
     'node cli info /empty', 'node cli info /empty', 'node cli info /missing',
     'node cli info /missing', 'node cli info /older', 'node cli info /older',
   ]);
+  await sampleAt(h, 60001);
+  assert.deepEqual(metadataCommands(h, 'node cli info '), [
+    'node cli info /empty', 'node cli info /empty', 'node cli info /empty',
+    'node cli info /missing', 'node cli info /missing', 'node cli info /missing',
+    'node cli info /older', 'node cli info /older',
+  ]);
+  await sampleAt(h, 60002);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 8);
 });
 
 test('cancels obsolete repo watches and ignores late batches after cancellation and destroy', async () => {
@@ -529,15 +541,71 @@ test('cancels obsolete repo watches and ignores late batches after cancellation 
   h.live.processResult = ok(VALID_PS);
   await sampleAt(h, 200);
   assert.equal(watches.calls[1]?.path, root);
+  await sampleAt(h, 201);
   watches.calls[0].resolve([root]);
   await Promise.resolve();
   await sampleAt(h, 500);
-  assert.equal(metadataCommands(h, 'node cli info ').length, 2);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 3);
   h.view.destroy();
   assert.equal(watches.calls[1].canceled, true);
   watches.calls[1].resolve([root]);
   await Promise.resolve();
   assert.equal(watches.calls.length, 2);
+});
+
+test('validates metadata once on the next sample after subscribing to a repo watch', async () => {
+  const watches = watchFixture();
+  let count = 0;
+  const h = await watchHarness(['/app'], watches, () => {
+    count++;
+    return ok('{"primary":"/app","gitCommonDir":"/app/.git"}');
+  });
+  assert.equal(watches.calls.length, 1);
+  assert.equal(count, 1);
+  await sampleAt(h, 100);
+  assert.equal(count, 2);
+  await sampleAt(h, 200);
+  assert.equal(count, 2);
+  assert.equal(watches.calls.length, 1);
+});
+
+test('cancels a departed repo root after a valid partial listing and failed process scan', async () => {
+  const watches = watchFixture();
+  const h = await watchHarness(['/app', '/other'], watches, (place) => (
+    ok(JSON.stringify({ primary: place, gitCommonDir: place + '/.git' }))
+  ));
+  const initial = h.state.shared.get('orca.resources');
+  h.live.listing = terminalListing([{ address: '1', pid: 6, labels: { 'herdr.space': '1' } }]);
+  h.live.processResult = { code: 1, stderr: 'temporarily unavailable' };
+  assert.equal(await sampleAt(h, 100), initial);
+  assert.equal(watches.calls[0].canceled, true);
+  assert.equal(watches.calls[1].canceled, false);
+  watches.calls[0].resolve(['/app/.git/worktrees']);
+  await Promise.resolve();
+  assert.equal(watches.calls.length, 2);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 2);
+});
+
+test('cancels a departed repo root before unrelated repo lookups finish', async () => {
+  const watches = watchFixture();
+  const pending = deferred();
+  const h = await watchHarness(['/app', '/other', '/new'], watches, (place) => (
+    place === '/next' ? pending.promise : ok(JSON.stringify({ primary: place, gitCommonDir: place + '/.git' }))
+  ));
+  h.state.spaces[2].folder = '/next';
+  h.live.listing = terminalListing([
+    { address: '1', pid: 6, labels: { 'herdr.space': '1' } },
+    { address: '2', pid: 6, labels: { 'herdr.space': '2' } },
+  ]);
+  const sampling = sampleAt(h, 100);
+  await new Promise(setImmediate);
+  const wasCanceled = watches.calls[0].canceled;
+  const remainingCanceled = watches.calls[1].canceled;
+  pending.resolve(ok('{"primary":"/next","gitCommonDir":"/next/.git"}'));
+  await sampling;
+  assert.equal(wasCanceled, true);
+  assert.equal(remainingCanceled, false);
+  assert.ok(metadataCommands(h, 'node cli info ').includes('node cli info /next'));
 });
 
 test('keeps repo watch invalidations that arrive during a lookup', async () => {

@@ -51,9 +51,8 @@ function repoWatchPath(parsed) {
 function affectsRepo(path, root) {
   if (path === root) return true;
   if (typeof path !== "string" || !path.startsWith(root + "/")) return false;
-  const [, metadata] = path.slice(root.length + 1).split("/", 2);
-  // These files change during ordinary commands in a linked worktree.
-  return !["index", "index.lock", "logs", "refs"].includes(metadata);
+  const [, metadata, child] = path.slice(root.length + 1).split("/", 3);
+  return !metadata || (child === undefined && /^(gitdir|commondir)(\.lock)?$/.test(metadata));
 }
 
 function parseCommands(text) {
@@ -90,6 +89,7 @@ export default class OrcaResources extends View {
     this.lastSampleAt = 0;
     this.lastRefresh = shared("orca.resources.refresh")?.at ?? null;
     this.termCache = new Map();
+    this.terminalPlaces = new Map();
     this.repoCache = new Map();
     this.repoWatches = new Map();
     this.history = new Map();
@@ -170,6 +170,17 @@ export default class OrcaResources extends View {
     }
   }
 
+  pruneRepoWatches(activePlaces) {
+    for (const [path, watch] of this.repoWatches) {
+      for (const place of watch.places) {
+        if (!activePlaces.has(place)) watch.places.delete(place);
+      }
+      if (watch.places.size) continue;
+      this.repoWatches.delete(path);
+      watch.handle?.cancel();
+    }
+  }
+
   syncRepoWatches(_cx, activePlaces, now) {
     if (typeof watchFolder !== "function") return;
     const placesByPath = new Map();
@@ -187,18 +198,26 @@ export default class OrcaResources extends View {
     for (const [path, places] of placesByPath) {
       let watch = this.repoWatches.get(path);
       if (!watch) {
-        watch = { handle: null, places, dirtyAt: null, retryAt: 0 };
+        watch = { handle: null, places, dirtyAt: null, retryAt: 0, validateAfterSubscribe: false };
         this.repoWatches.set(path, watch);
       }
       watch.places = places;
-      if (!watch.handle && now >= watch.retryAt) this.armRepoWatch(path, watch);
+      if (!watch.handle && now >= watch.retryAt) {
+        this.armRepoWatch(path, watch);
+        // Close the gap between reading repo metadata and registering the watch.
+        watch.validateAfterSubscribe = Boolean(watch.handle);
+      }
     }
   }
 
   invalidateRepoWatches(now) {
     for (const watch of this.repoWatches.values()) {
-      if (watch.dirtyAt == null || now < watch.dirtyAt) continue;
+      const due = watch.dirtyAt == null
+        ? watch.handle && watch.validateAfterSubscribe
+        : now >= watch.dirtyAt;
+      if (!due) continue;
       watch.dirtyAt = null;
+      watch.validateAfterSubscribe = false;
       for (const place of watch.places) {
         const cached = this.repoCache.get(place);
         if (cached) cached.freshAt = null;
@@ -346,11 +365,18 @@ export default class OrcaResources extends View {
           if (!addresses.has(address)) this.termCache.delete(address);
         }
 
+        for (const address of this.terminalPlaces.keys()) {
+          if (!addresses.has(address)) this.terminalPlaces.delete(address);
+        }
+
         if (!liveEntries.length) {
           this.repoCache.clear();
           this.cancelRepoWatches();
         }
-        if (processes.status !== "fulfilled") return;
+        if (processes.status !== "fulfilled") {
+          this.pruneRepoWatches(new Set(this.terminalPlaces.values()));
+          return;
+        }
         const { procs, commands } = processes.value;
 
         const sps = spaces();
@@ -364,6 +390,7 @@ export default class OrcaResources extends View {
 
         const termRows = [];
         const places = new Set();
+        this.terminalPlaces.clear();
         const roots = [];
 
         for (let i = 0; i < liveEntries.length; i++) {
@@ -378,7 +405,10 @@ export default class OrcaResources extends View {
           if (meta.pid != null) roots.push(meta.pid);
 
           const place = space ? placeOf(space, psList) || entry.cwd || "" : "";
-          if (place) places.add(place);
+          if (place) {
+            places.add(place);
+            this.terminalPlaces.set(entry.address, place);
+          }
 
           termRows.push({
             address: entry.address,
@@ -393,6 +423,7 @@ export default class OrcaResources extends View {
         for (const place of this.repoCache.keys()) {
           if (!places.has(place)) this.repoCache.delete(place);
         }
+        this.pruneRepoWatches(places);
         const repoAt = Date.now();
         // Consume due events before lookups so new batches survive the sample.
         this.invalidateRepoWatches(repoAt);
