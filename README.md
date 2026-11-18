@@ -107,6 +107,18 @@ bash scripts/install-rust.sh
 
 Switch back to the Node CLI with `bash scripts/install.sh`.
 
+### Install the prebuilt binary
+
+On Apple Silicon Macs, check out the tag for the [release](https://github.com/nguyenchanh0201/herdr-orca-worktrees/releases) you want and run `bash scripts/install.sh` to install the mods. Download `orca-wt-darwin-arm64.tar.gz` and its `.sha256` file into the same directory. Verify the archive and extract the binary to a permanent location.
+
+```bash
+shasum -a 256 -c orca-wt-darwin-arm64.tar.gz.sha256 &&
+  mkdir -p ~/.local/bin &&
+  tar -xzf orca-wt-darwin-arm64.tar.gz -C ~/.local/bin
+```
+
+From the release checkout, run `bash scripts/install-rust.sh ~/.local/bin/orca-wt`. This path uses the downloaded binary without Cargo. Keep the binary at that path while the mods use it.
+
 ## Uninstall
 
 ```bash
@@ -154,3 +166,9 @@ npm test        # node --test
 ```
 
 API docs for mods are in `~/.config/herdr-app/AGENTS.md`, `herdr.d.ts` and `gpui-kit.d.ts`. Designs and build plans are in `docs/superpowers/`.
+
+### CI and releases
+
+GitHub Actions runs the Node and Rust tests, builds an Apple Silicon release binary, and verifies both installer paths and layout preservation on PRs into `main` and pushes to `main`. The installer smoke test uses a pinned Herdr version.
+
+After the first hosted run passes, make **Verify macOS ARM64** a required status check on `main`. To cut a release, push a `vMAJOR.MINOR.PATCH` tag pointing to a commit on `main`. The release workflow reruns CI and creates a draft GitHub Release with the tested archive and checksum. Review the draft before publishing it. If an asset upload fails and GitHub leaves an incomplete draft, remove that draft before rerunning the failed release job.
