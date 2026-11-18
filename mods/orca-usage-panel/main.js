@@ -37,9 +37,14 @@ function resetLabel(resetsAt, now) {
 export default class OrcaUsagePanel extends View {
   init(_p, cx) {
     this.icons = {};
-    this.selected = null;
+    this.owned = false;
+    this.hovered = null;
     this.width = LIST_W + GAP + DETAILS_W;
     if (checking() || !props()?.overlay) return;
+
+    // The chip toggles on this: it closes an open panel instead of opening a second one.
+    this.owned = true;
+    setShared("orca.usage.panel", { id: props().overlay, closedAt: 0 });
 
     cx.spawn(async (cx) => {
       try {
@@ -55,6 +60,11 @@ export default class OrcaUsagePanel extends View {
       } catch {}
       cx.notify();
     });
+  }
+
+  async close() {
+    if (!this.owned) return;
+    setShared("orca.usage.panel", { id: null, closedAt: Date.now() });
   }
 
   iconFor(id, color, size = 20) {
@@ -163,7 +173,8 @@ export default class OrcaUsagePanel extends View {
       );
   }
 
-  // Selection follows hover entry; row size depends only on the mode, so hover never moves rows.
+  // The details card follows the hovered row and goes away with the pointer; row size depends only on
+  // the mode, so hover never moves rows.
   selectable(row, p, isSelected, t) {
     return row
       .id(`provider-${p.id}`)
@@ -171,14 +182,18 @@ export default class OrcaUsagePanel extends View {
       .when(isSelected, (el) => el.bg(t.selected))
       .when(!isSelected, (el) => el.hover((s) => s.bg(t.selected)))
       .on_hover((hovered, cx) => {
-        if (hovered && this.selected !== p.id) {
-          this.selected = p.id;
+        // Entering the next row may be reported before leaving this one, so only clear our own.
+        if (hovered && this.hovered !== p.id) {
+          this.hovered = p.id;
+          cx.notify();
+        } else if (!hovered && this.hovered === p.id) {
+          this.hovered = null;
           cx.notify();
         }
       })
       .on_click((_e, cx) => {
-        if (this.selected !== p.id) {
-          this.selected = p.id;
+        if (this.hovered !== p.id) {
+          this.hovered = p.id;
           cx.notify();
         }
       });
@@ -450,13 +465,14 @@ export default class OrcaUsagePanel extends View {
       .filter((p) => p.status !== "unavailable")
       .sort((a, b) => maxUsed(b) - maxUsed(a));
     const unavailable = providers.filter((p) => p.status === "unavailable");
-    const selectedProvider = available.find((p) => p.id === this.selected) ?? available[0] ?? null;
+    // Details show only while a row is hovered; with the pointer elsewhere there is just the list.
+    const selectedProvider = available.find((p) => p.id === this.hovered) ?? null;
     const selectedId = selectedProvider?.id ?? null;
 
     const side = this.width >= LIST_W + GAP + DETAILS_W;
     const cardH = side ? height : Math.floor((height - GAP) / 2);
     const list = this.renderListCard(t, now, data, available, unavailable, selectedId, cardH);
-    const details = this.renderDetailsCard(t, now, data, selectedProvider, cardH);
+    const details = selectedProvider ? this.renderDetailsCard(t, now, data, selectedProvider, cardH) : null;
 
     // The root is see-through and fills the popup: a press on it (beside the cards) closes it.
     return div()
@@ -476,8 +492,8 @@ export default class OrcaUsagePanel extends View {
       .on_mouse_down("left", () => closeOverlay(overlay))
       .child(
         side
-          ? h_flex().items_end().gap(GAP).child(list).child(details)
-          : v_flex().gap(GAP).child(details).child(list)
+          ? h_flex().items_end().gap(GAP).child(list).when(details, (el) => el.child(details))
+          : v_flex().gap(GAP).when(details, (el) => el.child(details)).child(list)
       );
   }
 }

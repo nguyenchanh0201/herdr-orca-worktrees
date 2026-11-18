@@ -1,2 +1,5 @@
 node_modules/
 mods/*/config.js
+rust/target/
+*/.DS_Store
+.DS_Store

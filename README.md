@@ -97,6 +97,16 @@ bash scripts/install.sh projects orca-project
 
 That form skips the layout and the checks. Run `herdr-app check ~/.config/herdr-app/mods/<mod>` yourself afterwards.
 
+## Rust CLI (optional)
+
+`rust/` is a Rust port of `bin/orca-wt.js` (same subcommands, same JSON on stdout). To build it and point the installed mods at the binary:
+
+```bash
+bash scripts/install-rust.sh
+```
+
+Switch back to the Node CLI with `bash scripts/install.sh`.
+
 ## Uninstall
 
 ```bash

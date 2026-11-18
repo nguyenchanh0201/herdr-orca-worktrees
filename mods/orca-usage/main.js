@@ -1,9 +1,14 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { theme, knownAgents, exec, openOverlay, shared, setShared, checking } from "herdr";
+import { theme, knownAgents, exec, openOverlay, closeOverlay, shared, setShared, checking } from "herdr";
 import config from "./config.js";
 import { chipText } from "./format.js";
 import { merge } from "./merge.js";
+
+// Both cards of orca-usage-panel side by side: LIST_W + GAP + DETAILS_W there.
+const PANEL_W = 648;
+// A press this soon after the panel closed is the click that closed it, not a request to reopen.
+const PANEL_REOPEN_GUARD_MS = 300;
 
 function maxUsed(p) {
   return p.windows?.length ? Math.max(...p.windows.map((w) => w.usedPercent)) : -1;
@@ -29,6 +34,8 @@ export default class OrcaUsage extends View {
     if (checking()) return;
 
     setShared("orca.usage.mode", this.mode);
+    // A panel id left over from a previous run would make the first press try to close a dead overlay.
+    setShared("orca.usage.panel", null);
 
     cx.spawn(async (cx) => {
       try {
@@ -161,10 +168,22 @@ export default class OrcaUsage extends View {
       })
       // A popup at {x, y} is placed by its top-left corner, kept inside the window and as tall as its
       // content (capped at height), so the panel gets an exact height that ends just above the strip.
+      // Its width is exactly the two cards, so it sits over the chip instead of spanning the window.
       .on_mouse_down("left", (e) => {
+        // Toggle: a press while the panel is open closes it. A press that just dismissed it (the
+        // outside-click close may land before this handler) must not reopen it either.
+        const panel = shared("orca.usage.panel");
+        if (panel?.id) {
+          try {
+            closeOverlay(panel.id);
+          } catch {}
+          setShared("orca.usage.panel", { id: null, closedAt: Date.now() });
+          return;
+        }
+        if (panel?.closedAt && Date.now() - panel.closedAt < PANEL_REOPEN_GUARD_MS) return;
         const b = e?.bounds;
         if (!b) {
-          openOverlay({ mod: "orca-usage-panel", kind: "popup", frame: "none", width: 0.95, height: 0.85 });
+          openOverlay({ mod: "orca-usage-panel", kind: "popup", frame: "none", width: PANEL_W, height: 0.85 });
           return;
         }
         const height = Math.max(200, Math.round(b.y - 12));
@@ -172,9 +191,9 @@ export default class OrcaUsage extends View {
           mod: "orca-usage-panel",
           kind: "popup",
           frame: "none",
-          width: 0.95,
+          width: PANEL_W,
           height,
-          at: { x: Math.round(b.x + 4), y: Math.round(b.y - 4 - height) },
+          at: { x: Math.round(b.x), y: Math.round(b.y - 4 - height) },
           props: { height },
         });
       })
