@@ -59,7 +59,12 @@ function info(folder) {
   if (!folder) return { error: "missing folder" };
   const g = gitInfo(folder);
   if (!g) return { error: "not a git repository" };
-  return { worktree: g.worktree, primary: g.primary, linked: g.linked };
+  return {
+    worktree: g.worktree,
+    primary: g.primary,
+    linked: g.linked,
+    gitCommonDir: g.gitCommonDir,
+  };
 }
 
 function setup(folder) {

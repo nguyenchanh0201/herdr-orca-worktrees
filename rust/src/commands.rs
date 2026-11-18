@@ -61,7 +61,7 @@ fn last_lines(text: &str, max: usize) -> &str {
 pub fn info(target: Option<&str>) -> Value {
     let Some(target) = target.filter(|s| !s.is_empty()) else { return err("missing folder"); };
     let Some(g) = git_info(target) else { return err("not a git repository"); };
-    json!({"worktree":g.worktree, "primary":g.primary, "linked":g.linked})
+    json!({"worktree":g.worktree, "primary":g.primary, "linked":g.linked, "gitCommonDir":g.common_dir})
 }
 
 pub fn setup(target: Option<&str>) -> Value {
@@ -159,6 +159,21 @@ mod tests {
     #[test]
     fn missing_folder_errors() {
         assert_eq!(super::info(None), serde_json::json!({"error":"missing folder"}));
+    }
+    #[test]
+    fn info_shares_canonical_git_common_dir() {
+        let repo = crate::fs_ops::tests::Repo::new();
+        let primary = repo.primary.canonicalize().unwrap();
+        let worktree = repo.worktree.canonicalize().unwrap();
+        let common_dir = primary.join(".git").canonicalize().unwrap();
+
+        assert_eq!(info(repo.primary.to_str()), json!({
+            "worktree": primary, "primary": primary, "linked": false, "gitCommonDir": common_dir,
+        }));
+        assert_eq!(info(repo.worktree.to_str()), json!({
+            "worktree": worktree, "primary": primary, "linked": true, "gitCommonDir": common_dir,
+        }));
+        assert_eq!(info(repo.root.to_str()), json!({"error": "not a git repository"}));
     }
     #[test]
     fn linked_cli_lifecycle() {

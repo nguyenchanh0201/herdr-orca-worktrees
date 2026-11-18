@@ -16,10 +16,10 @@ function gitInfo(folder) {
   try {
     const worktree = fs.realpathSync(lines[0]);
     const gitDir = fs.realpathSync(lines[1]);
-    const commonDir = fs.realpathSync(lines[2]);
-    const primary = fs.realpathSync(path.dirname(commonDir));
-    const linked = gitDir !== commonDir;
-    return { worktree, primary, gitDir, linked };
+    const gitCommonDir = fs.realpathSync(lines[2]);
+    const primary = fs.realpathSync(path.dirname(gitCommonDir));
+    const linked = gitDir !== gitCommonDir;
+    return { worktree, primary, gitDir, linked, gitCommonDir };
   } catch {
     return null;
   }

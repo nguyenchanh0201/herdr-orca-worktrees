@@ -165,7 +165,23 @@ test("preflight, archive, remove, remove --force refuse primary folder", () => {
   assert.equal(fs.existsSync(marker), false);
 });
 
+test("info reports the same Git common directory for primary and linked worktrees", () => {
+  const gitCommonDir = path.join(repo.primary, ".git");
+  assert.deepEqual(runCli(["info", repo.primary], tmpHome), {
+    worktree: repo.primary,
+    primary: repo.primary,
+    linked: false,
+    gitCommonDir,
+  });
+  assert.deepEqual(runCli(["info", repo.worktree], tmpHome), {
+    worktree: repo.worktree,
+    primary: repo.primary,
+    linked: true,
+    gitCommonDir,
+  });
+});
+
 test("info on non-git folder returns error", () => {
   const res = runCli(["info", os.tmpdir()], tmpHome);
-  assert.ok(typeof res.error === "string" && res.error.length > 0);
+  assert.deepEqual(res, { error: "not a git repository" });
 });

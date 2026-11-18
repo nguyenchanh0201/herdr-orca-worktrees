@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { readModSource } = require('./helpers/modsource');
 
+const COMBINED_PS = 'pid=,ppid=,pcpu=,rss=,comm=';
+
 function element(kind, path) {
   const node = { kind, path, attrs: {}, kids: [] };
   const proxy = new Proxy(node, {
@@ -40,7 +42,9 @@ async function chipHarness(execStub, opts = {}) {
     spaces: opts.spaces ?? [],
     panes: opts.panes ?? [],
     terminals: opts.terminals ?? [],
-    checking: false,
+    checking: opts.checking ?? false,
+    now: 0,
+    window: Object.hasOwn(opts, 'window') ? opts.window : () => ({ active: true }),
     notices: 0,
     timers: [],
   };
@@ -49,7 +53,13 @@ async function chipHarness(execStub, opts = {}) {
     notify() { state.notices++; },
     stop_propagation() {},
     spawn(fn) { pending.push(Promise.resolve().then(() => fn(cx))); },
-    timer: { every(ms, fn) { state.timers.push({ ms, fn }); } },
+    timer: {
+      every(ms, fn) {
+        const timer = { ms, fn, canceled: false, cancel() { this.canceled = true; } };
+        state.timers.push(timer);
+        return timer;
+      },
+    },
   };
   const context = {
     ...await import('../mods/orca-resources/tree.js'),
@@ -82,7 +92,9 @@ async function chipHarness(execStub, opts = {}) {
       state.execs.push({ cmd, argv: argv ?? [], options });
       return execStub(cmd, argv ?? [], options);
     },
-    Date,
+    watchFolder: opts.watchFolder,
+    window: state.window,
+    Date: { now: () => state.now },
   };
   const source = readModSource('orca-resources');
   vm.runInNewContext(`${source}\nthis.Mod = OrcaResources;`, context);
@@ -92,6 +104,12 @@ async function chipHarness(execStub, opts = {}) {
     view,
     cx,
     state,
+    tickAt(now) {
+      state.now = now;
+      for (const timer of state.timers) {
+        if (!timer.canceled) timer.fn(cx);
+      }
+    },
     async flush() {
       while (pending.length) await Promise.all(pending.splice(0));
     },
@@ -115,11 +133,8 @@ test('placeOf copies agree on all cases', async () => {
 
 test('sample publishes a snapshot', async () => {
   const h = await chipHarness((cmd, argv) => {
-    if (cmd === 'ps' && argv[1] === 'pid=,ppid=,pcpu=,rss=') {
-      return { code: 0, stdout: ' 100 1 1.5 1000\n 200 1 2.0 2000\n 300 1 0.5 500\n', stderr: '' };
-    }
-    if (cmd === 'ps' && argv[1] === 'pid=,comm=') {
-      return { code: 0, stdout: ' 100 /bin/zsh\n', stderr: '' };
+    if (cmd === 'ps' && argv[1] === COMBINED_PS) {
+      return { code: 0, stdout: ' 100 1 1.5 1000 /bin/zsh\n 200 1 2.0 2000 /bin/zsh\n 300 1 0.5 500 /bin/bash\n 400 1 0.5 100 /x/herdr-core\n', stderr: '' };
     }
     if (cmd === 'hc' && argv[0] === 'ls') {
       return {
@@ -129,6 +144,7 @@ test('sample publishes a snapshot', async () => {
             { address: 't1', agent: 'claude-code', cwd: '/repos/app/wt1', state: 'live', where: 'wt1 / 1' },
             { address: 't2', agent: 'zsh', cwd: '/repos/app/wt1', state: 'live', where: 'wt1 / 2' },
             { address: 't3', agent: 'bash', cwd: '/tmp', state: 'live', where: 'tmp' },
+            { address: 'remote/t4', state: 'live' },
           ],
         }),
         stderr: '',
@@ -156,15 +172,20 @@ test('sample publishes a snapshot', async () => {
   assert.equal(snap.projects[0].name, 'my-app');
   assert.equal(snap.other.length, 1);
   assert.equal(snap.other[0].address, 't3');
+  assert.equal(snap.other[0].rss, 500);
+  assert.equal(snap.herdr.rss, 100);
+  assert.ok(!sampleCommands(h).includes('hc get remote/t4 --json'));
+
+  h.state.execs.length = 0;
+  h.view.sample(h.cx);
+  await h.flush();
+  assert.deepEqual(sampleCommands(h), ['hc ls --json', 'ps -axo pid=,ppid=,pcpu=,rss=,comm=']);
 });
 
 test('pids are looked up once', async () => {
   const h = await chipHarness((cmd, argv) => {
-    if (cmd === 'ps' && argv[1] === 'pid=,ppid=,pcpu=,rss=') {
-      return { code: 0, stdout: ' 100 1 1.0 1000\n', stderr: '' };
-    }
-    if (cmd === 'ps' && argv[1] === 'pid=,comm=') {
-      return { code: 0, stdout: '', stderr: '' };
+    if (cmd === 'ps' && argv[1] === COMBINED_PS) {
+      return { code: 0, stdout: ' 100 1 1.0 1000 /bin/zsh\n', stderr: '' };
     }
     if (cmd === 'hc' && argv[0] === 'ls') {
       return { code: 0, stdout: JSON.stringify({ terminals: [{ address: 't1', agent: 'zsh', cwd: '/r', state: 'live' }] }), stderr: '' };
@@ -185,26 +206,665 @@ test('pids are looked up once', async () => {
   assert.equal(gets.length, 1);
 });
 
-test('skips a sample while one is running', async () => {
-  let resolvePs;
-  const neverPs = new Promise((r) => { resolvePs = r; });
+function deferred() {
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+function terminalListing(entries) {
+  return ok(JSON.stringify({ terminals: entries.map((entry) => ({ state: 'live', ...entry })) }));
+}
+
+function metadataCommands(h, prefix) {
+  return sampleCommands(h).filter((command) => command.startsWith(prefix));
+}
+
+async function sampleAt(h, now) {
+  h.state.now = now;
+  h.view.sample(h.cx);
+  await h.flush();
+  return h.state.shared.get('orca.resources');
+}
+
+test('uses current listing and host metadata, then reuses it when fields disappear', async () => {
+  let entries = [
+    { address: 't1', pid: 6 },
+    { address: 't2', labels: {} },
+  ];
   const h = await chipHarness((cmd, argv) => {
-    if (cmd === 'ps' && argv[1] === 'pid=,ppid=,pcpu=,rss=') return neverPs;
-    return { code: 0, stdout: '{}', stderr: '' };
+    if (cmd === 'ps') return ok(VALID_PS);
+    if (argv[0] === 'ls') return terminalListing(entries);
+    if (cmd === 'node') return ok('{"primary":"/repos/app"}');
+    return { code: 1, stdout: '' };
+  }, {
+    terminals: [
+      { address: 't1', pid: 8, labels: { 'herdr.space': 's1', 'herdr.tab': 'a' } },
+      { address: 't2', pid: 7, labels: { 'herdr.space': 's1' } },
+    ],
+    spaces: [{ id: 's1', folder: '/repos/app', tabs: [{ id: 'a', name: 'Editor' }, { id: 'b', name: 'Shell' }] }],
   });
 
-  await Promise.resolve();
-  h.view.sample(h.cx);
-  await Promise.resolve();
-  assert.equal(h.state.execs.filter((e) => e.cmd === 'ps' && e.argv[1] === 'pid=,ppid=,pcpu=,rss=').length, 1);
-  resolvePs({ code: 0, stdout: '', stderr: '' });
   await h.flush();
+  const initial = h.state.shared.get('orca.resources');
+  assert.equal(initial?.projects[0]?.worktrees[0]?.terminals[0]?.label, 'Editor');
+  assert.equal(initial.projects[0].worktrees[0].terminals[0].pid, 6);
+  assert.equal(initial.other[0].pid, 7);
+
+  h.state.terminals = [];
+  entries = [{ address: 't1', labels: { 'herdr.space': 's1', 'herdr.tab': 'b' } }, { address: 't2' }];
+  const changed = await sampleAt(h, 1000);
+  assert.equal(changed.projects[0].worktrees[0].terminals[0].label, 'Shell');
+  assert.equal(changed.other[0].pid, 7);
+
+  entries = [{ address: 't1' }, { address: 't2' }];
+  const reused = await sampleAt(h, 2000);
+  assert.equal(reused.projects[0].worktrees[0].terminals[0].label, 'Shell');
+  assert.equal(reused.other[0].pid, 7);
+  assert.deepEqual(metadataCommands(h, 'hc get '), []);
+});
+
+test('replaces terminal metadata when a live address reports a new PID', async () => {
+  let entries = [{ address: 't1' }];
+  let detail = { pid: 6, labels: { 'herdr.space': 's1' } };
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'ps') return ok(VALID_PS);
+    if (argv[0] === 'ls') return terminalListing(entries);
+    if (cmd === 'node') return ok('{"primary":"/app"}');
+    return ok(JSON.stringify(detail));
+  }, { spaces: [{ id: 's1', folder: '/app', tabs: [] }] });
+
+  await h.flush();
+  assert.equal(h.state.shared.get('orca.resources')?.count, 1);
+  entries = [{ address: 't1', pid: 7 }];
+  detail = { pid: 7, labels: {} };
+  const changed = await sampleAt(h, 1000);
+  assert.equal(changed.count, 0);
+  assert.equal(changed.other[0].pid, 7);
+
+  entries = [{ address: 't1' }];
+  const reused = await sampleAt(h, 2000);
+  assert.equal(reused.other[0].pid, 7);
+  assert.deepEqual(metadataCommands(h, 'hc get '), ['hc get t1 --json', 'hc get t1 --json']);
+});
+
+test('evicts absent terminals and repo places after a valid listing', async () => {
+  const space = { id: 's1', folder: '/checkout', tabs: [] };
+  let listing = terminalListing([{ address: 't1' }]);
+  let pid = 6;
+  let primary = '/old';
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'ps') return ok(VALID_PS);
+    if (argv[0] === 'ls') return listing;
+    if (cmd === 'node') return ok(JSON.stringify({ primary }));
+    return ok(JSON.stringify({ pid, labels: { 'herdr.space': 's1' } }));
+  }, { spaces: [space] });
+
+  await h.flush();
+  const initial = h.state.shared.get('orca.resources');
+  assert.equal(initial?.projects[0]?.key, '/old');
+
+  listing = ok('{}');
+  assert.equal(await sampleAt(h, 1000), initial);
+  listing = terminalListing([{ address: 't1' }]);
+  assert.equal((await sampleAt(h, 2000)).projects[0].key, '/old');
+  assert.equal(metadataCommands(h, 'hc get ').length, 1);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 1);
+
+  listing = terminalListing([]);
+  assert.equal((await sampleAt(h, 3000)).count, 0);
+  listing = terminalListing([{ address: 't1' }]);
+  pid = 7;
+  primary = '/new';
+  const next = await sampleAt(h, 4000);
+  assert.equal(next.projects[0].key, '/new');
+  assert.equal(next.projects[0].worktrees[0].terminals[0].pid, 7);
+  assert.equal(metadataCommands(h, 'hc get ').length, 2);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 2);
+});
+
+test('evicts terminal and repo metadata from a valid empty listing when the process scan fails', async () => {
+  let listing = terminalListing([{ address: 't1' }]);
+  let processResult = ok(VALID_PS);
+  let pid = 6;
+  let primary = '/old';
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'ps') return processResult;
+    if (argv[0] === 'ls') return listing;
+    if (cmd === 'node') return ok(JSON.stringify({ primary }));
+    return ok(JSON.stringify({ pid, labels: { 'herdr.space': 's1' } }));
+  }, { spaces: [{ id: 's1', folder: '/checkout', tabs: [] }] });
+
+  await h.flush();
+  const initial = h.state.shared.get('orca.resources');
+  assert.equal(initial?.projects[0]?.key, '/old');
+  assert.equal(initial.projects[0].worktrees[0].terminals[0].pid, 6);
+
+  listing = terminalListing([]);
+  processResult = { code: 1, stdout: '', stderr: 'temporarily unavailable' };
+  assert.equal(await sampleAt(h, 1000), initial);
+  assert.equal(metadataCommands(h, 'hc get ').length, 1);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 1);
+
+  listing = terminalListing([{ address: 't1' }]);
+  processResult = ok(VALID_PS);
+  pid = 7;
+  primary = '/new';
+  const next = await sampleAt(h, 2000);
+  assert.equal(next.projects[0].key, '/new');
+  assert.equal(next.projects[0].worktrees[0].terminals[0].pid, 7);
+  assert.equal(metadataCommands(h, 'hc get ').length, 2);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 2);
+});
+
+for (const [name, failed] of [
+  ['failed', { code: 1, stdout: '' }],
+  ['incomplete', ok('{"labels":{}}')],
+]) {
+  test(`retries a ${name} terminal lookup when the five-second delay expires`, async () => {
+    let detail = failed;
+    const h = await chipHarness((cmd, argv) => {
+      if (cmd === 'ps') return ok(VALID_PS);
+      if (argv[0] === 'ls') return terminalListing([{ address: 't1' }]);
+      return detail;
+    });
+
+    await h.flush();
+    assert.equal(h.state.shared.get('orca.resources')?.other[0]?.pid, null);
+    detail = ok('{"pid":6,"labels":{}}');
+    assert.equal((await sampleAt(h, 4999)).other[0].pid, null);
+    assert.equal(metadataCommands(h, 'hc get ').length, 1);
+    assert.equal((await sampleAt(h, 5000)).other[0].pid, 6);
+    await sampleAt(h, 10000);
+    assert.equal(metadataCommands(h, 'hc get ').length, 2);
+  });
+}
+
+for (const destroy of [false, true]) {
+  test(destroy ? 'teardown stops the terminal lookup queue' : 'caps terminal lookup concurrency at four and keeps listing order', async () => {
+    const entries = Array.from({ length: 6 }, (_, i) => ({ address: `t${i + 1}` }));
+    const results = entries.map(() => deferred());
+    let active = 0;
+    let peak = 0;
+    const h = await chipHarness((cmd, argv) => {
+      if (cmd === 'ps') return ok(VALID_PS);
+      if (argv[0] === 'ls') return terminalListing(entries);
+      active++;
+      peak = Math.max(active, peak);
+      const index = Number(argv[1].slice(1)) - 1;
+      return results[index].promise.then(() => {
+        active--;
+        return ok(JSON.stringify({ pid: index + 6, labels: {} }));
+      });
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    const initial = metadataCommands(h, 'hc get ').length;
+    if (destroy) h.view.destroy();
+    for (const i of [3, 2, 5, 4, 1, 0]) {
+      results[i].resolve();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await h.flush();
+
+    assert.equal(initial, 4);
+    assert.equal(peak, 4);
+    assert.equal(metadataCommands(h, 'hc get ').length, destroy ? 4 : 6);
+    const snap = h.state.shared.get('orca.resources');
+    if (destroy) {
+      assert.equal(snap, undefined);
+    } else {
+      assert.deepEqual(Array.from(snap.other, ({ address }) => address), ['t1', 't2', 't3', 't4', 't5', 't6']);
+    }
+  });
+}
+
+function watchFixture() {
+  const calls = [];
+  return {
+    calls,
+    watchFolder(path) {
+      let resolve;
+      let reject;
+      const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+      const call = { path, resolve, reject, canceled: false };
+      // Allow a batch queued before cancellation to finish afterward.
+      promise.cancel = () => { call.canceled = true; };
+      calls.push(call);
+      return promise;
+    },
+  };
+}
+
+async function watchHarness(places, watches, info) {
+  const spaces = places.map((folder, index) => ({ id: String(index), folder, tabs: [] }));
+  const live = {
+    listing: terminalListing(spaces.map(({ id }) => ({
+      address: id, pid: 6, labels: { 'herdr.space': id },
+    }))),
+    processResult: ok(VALID_PS),
+  };
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'ps') return live.processResult;
+    if (argv[0] === 'ls') return live.listing;
+    return info(argv[2]);
+  }, { spaces, watchFolder: watches.watchFolder });
+  await h.flush();
+  return { ...h, live };
+}
+
+test('repo watch bursts rearm without sampling and refresh only their root after 250 ms', async () => {
+  const watches = watchFixture();
+  const root = '/app/.git/worktrees';
+  const h = await watchHarness(['/app', '/linked', '/other'], watches, (place) => (
+    place === '/other'
+      ? ok('{"primary":"/other","gitCommonDir":"/other/.git"}')
+      : ok('{"primary":"/app","gitCommonDir":"/app/.git"}')
+  ));
+  assert.deepEqual(watches.calls.map(({ path }) => path), [root, '/other/.git/worktrees']);
+  await sampleAt(h, 1);
+  h.state.execs.length = 0;
+  const total = h.state.execs.length;
+  h.state.now = 100;
+  watches.calls[0].resolve([root + '/linked/gitdir']);
+  await Promise.resolve();
+  assert.equal(watches.calls[2]?.path, root);
+  h.state.now = 200;
+  watches.calls[2].resolve([root]);
+  await Promise.resolve();
+  assert.equal(watches.calls[3]?.path, root);
+  assert.equal(h.state.execs.length, total);
+  await sampleAt(h, 449);
+  const prefix = 'node cli info ';
+  assert.deepEqual(metadataCommands(h, prefix), []);
+  await sampleAt(h, 450);
+  assert.deepEqual(metadataCommands(h, prefix), [prefix + '/app', prefix + '/linked']);
+  watches.calls[3].resolve([
+    '/app/.git/refs/heads/main', root + '/linked/index.lock', root + '/linked/HEAD',
+    root + '/linked/ORIG_HEAD', root + '/linked/COMMIT_EDITMSG', root + '/linked/MERGE_HEAD',
+    root + '/linked/rebase-merge/head-name',
+  ]);
+  await Promise.resolve();
+  await sampleAt(h, 1000);
+  assert.equal(metadataCommands(h, prefix).length, 2);
+  await sampleAt(h, 61000);
+  assert.equal(metadataCommands(h, prefix).length, 2);
+
+  h.live.listing = terminalListing([{ address: '2', pid: 6, labels: { 'herdr.space': '2' } }]);
+  await sampleAt(h, 62000);
+  assert.equal(watches.calls[4]?.canceled, true);
+  assert.equal(watches.calls[1].canceled, false);
+});
+
+test('revalidates older CLI metadata and retries rejected or empty repo watches after 60 seconds', async () => {
+  const watches = watchFixture();
+  const h = await watchHarness(['/missing', '/empty', '/older'], watches, (place) => (
+    ok(JSON.stringify({ primary: place, gitCommonDir: place === '/older' ? undefined : place + '/.git' }))
+  ));
+  assert.deepEqual(watches.calls.map(({ path }) => path), ['/missing/.git/worktrees', '/empty/.git/worktrees']);
+  watches.calls[0].reject(new Error('directory does not exist'));
+  watches.calls[1].resolve([]);
+  await Promise.resolve();
+  await sampleAt(h, 59999);
+  assert.equal(watches.calls.length, 2);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 3);
+  await sampleAt(h, 60000);
+  assert.deepEqual(watches.calls.map(({ path }) => path), [
+    '/missing/.git/worktrees', '/empty/.git/worktrees', '/missing/.git/worktrees', '/empty/.git/worktrees',
+  ]);
+  assert.deepEqual(metadataCommands(h, 'node cli info '), [
+    'node cli info /empty', 'node cli info /empty', 'node cli info /missing',
+    'node cli info /missing', 'node cli info /older', 'node cli info /older',
+  ]);
+  await sampleAt(h, 60001);
+  assert.deepEqual(metadataCommands(h, 'node cli info '), [
+    'node cli info /empty', 'node cli info /empty', 'node cli info /empty',
+    'node cli info /missing', 'node cli info /missing', 'node cli info /missing',
+    'node cli info /older', 'node cli info /older',
+  ]);
+  await sampleAt(h, 60002);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 8);
+});
+
+test('cancels obsolete repo watches and ignores late batches after cancellation and destroy', async () => {
+  const watches = watchFixture();
+  const root = '/app/.git/worktrees';
+  const h = await watchHarness(['/app'], watches, () => ok('{"primary":"/app","gitCommonDir":"/app/.git"}'));
+  assert.equal(watches.calls[0]?.path, root);
+  const listing = h.live.listing;
+  h.live.listing = terminalListing([]);
+  h.live.processResult = { code: 1, stderr: 'temporarily unavailable' };
+  await sampleAt(h, 100);
+  assert.equal(watches.calls[0].canceled, true);
+  h.live.listing = listing;
+  h.live.processResult = ok(VALID_PS);
+  await sampleAt(h, 200);
+  assert.equal(watches.calls[1]?.path, root);
+  await sampleAt(h, 201);
+  watches.calls[0].resolve([root]);
+  await Promise.resolve();
+  await sampleAt(h, 500);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 3);
+  h.view.destroy();
+  assert.equal(watches.calls[1].canceled, true);
+  watches.calls[1].resolve([root]);
+  await Promise.resolve();
+  assert.equal(watches.calls.length, 2);
+});
+
+test('validates metadata once on the next sample after subscribing to a repo watch', async () => {
+  const watches = watchFixture();
+  let count = 0;
+  const h = await watchHarness(['/app'], watches, () => {
+    count++;
+    return ok('{"primary":"/app","gitCommonDir":"/app/.git"}');
+  });
+  assert.equal(watches.calls.length, 1);
+  assert.equal(count, 1);
+  await sampleAt(h, 100);
+  assert.equal(count, 2);
+  await sampleAt(h, 200);
+  assert.equal(count, 2);
+  assert.equal(watches.calls.length, 1);
+});
+
+test('cancels a departed repo root after a valid partial listing and failed process scan', async () => {
+  const watches = watchFixture();
+  const h = await watchHarness(['/app', '/other'], watches, (place) => (
+    ok(JSON.stringify({ primary: place, gitCommonDir: place + '/.git' }))
+  ));
+  const initial = h.state.shared.get('orca.resources');
+  h.live.listing = terminalListing([{ address: '1', pid: 6, labels: { 'herdr.space': '1' } }]);
+  h.live.processResult = { code: 1, stderr: 'temporarily unavailable' };
+  assert.equal(await sampleAt(h, 100), initial);
+  assert.equal(watches.calls[0].canceled, true);
+  assert.equal(watches.calls[1].canceled, false);
+  watches.calls[0].resolve(['/app/.git/worktrees']);
+  await Promise.resolve();
+  assert.equal(watches.calls.length, 2);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 2);
+});
+
+test('revalidates a returned place after a failed scan pruned it from a shared root', async () => {
+  const watches = watchFixture();
+  const root = '/app/.git/worktrees';
+  let linkedPrimary = '/app';
+  const h = await watchHarness(['/app', '/linked'], watches, (place) => (
+    ok(JSON.stringify({
+      primary: place === '/linked' ? linkedPrimary : '/app', gitCommonDir: '/app/.git',
+    }))
+  ));
+  const all = h.live.listing;
+  const initial = await sampleAt(h, 1);
+  assert.equal(initial.projects.length, 1);
+  h.live.listing = terminalListing([{ address: '0', pid: 6, labels: { 'herdr.space': '0' } }]);
+  h.live.processResult = { code: 1, stderr: 'temporarily unavailable' };
+  assert.equal(await sampleAt(h, 100), initial);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 4);
+  assert.equal(watches.calls[0].canceled, false);
+  linkedPrimary = '/moved';
+  watches.calls[0].resolve([root + '/linked/gitdir']);
+  await Promise.resolve();
+
+  h.live.processResult = ok(VALID_PS);
+  h.live.listing = all;
+  const returned = await sampleAt(h, 350);
+  assert.deepEqual(Array.from(returned.projects, ({ key }) => key), ['/app', '/moved']);
+});
+
+test('cancels a departed repo root before unrelated repo lookups finish', async () => {
+  const watches = watchFixture();
+  const pending = deferred();
+  const h = await watchHarness(['/app', '/other', '/new'], watches, (place) => (
+    place === '/next' ? pending.promise : ok(JSON.stringify({ primary: place, gitCommonDir: place + '/.git' }))
+  ));
+  h.state.spaces[2].folder = '/next';
+  h.live.listing = terminalListing([
+    { address: '1', pid: 6, labels: { 'herdr.space': '1' } },
+    { address: '2', pid: 6, labels: { 'herdr.space': '2' } },
+  ]);
+  const sampling = sampleAt(h, 100);
+  await new Promise(setImmediate);
+  const wasCanceled = watches.calls[0].canceled;
+  const remainingCanceled = watches.calls[1].canceled;
+  pending.resolve(ok('{"primary":"/next","gitCommonDir":"/next/.git"}'));
+  await sampling;
+  assert.equal(wasCanceled, true);
+  assert.equal(remainingCanceled, false);
+  assert.ok(metadataCommands(h, 'node cli info ').includes('node cli info /next'));
+});
+
+test('keeps repo watch invalidations that arrive during a lookup', async () => {
+  const watches = watchFixture();
+  const root = '/app/.git/worktrees';
+  const delayed = deferred();
+  const result = ok('{"primary":"/app","gitCommonDir":"/app/.git"}');
+  let count = 0;
+  const h = await watchHarness(['/app'], watches, () => (++count === 2 ? delayed.promise : result));
+  assert.equal(watches.calls[0]?.path, root);
+  watches.calls[0].resolve([root]);
+  await Promise.resolve();
+  const sampling = sampleAt(h, 250);
+  await new Promise(setImmediate);
+  assert.equal(count, 2);
+  watches.calls[1].resolve([root]);
+  await Promise.resolve();
+  h.state.now = 750;
+  delayed.resolve(result);
+  await sampling;
+  await sampleAt(h, 751);
+  assert.equal(count, 3);
+});
+
+test('looks up each distinct active place once and retries folder grouping after five seconds', async () => {
+  let scratch = { code: 1, stdout: '{"error":"unavailable"}' };
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'ps') return ok(VALID_PS);
+    if (argv[0] === 'ls') {
+      return terminalListing([
+        { address: 't1', pid: 6, labels: { 'herdr.space': 's1' } },
+        { address: 't2', pid: 7, labels: { 'herdr.space': 's2' } },
+        { address: 't3', pid: 8, labels: { 'herdr.space': 's3' } },
+      ]);
+    }
+    return argv[2] === '/checkout' ? ok('{"primary":"/repos/app"}') : scratch;
+  }, {
+    spaces: [
+      { id: 's1', folder: '/checkout', tabs: [] },
+      { id: 's2', folder: '/checkout', tabs: [] },
+      { id: 's3', folder: '/scratch', tabs: [] },
+    ],
+  });
+
+  await h.flush();
+  const initial = h.state.shared.get('orca.resources');
+  assert.deepEqual(Array.from(initial.projects, ({ key }) => key), ['/repos/app', '/scratch']);
+  assert.equal(initial.projects[0].worktrees[0].terminals.length, 2);
+  scratch = ok('{"primary":"/repos/scratch"}');
+  assert.equal((await sampleAt(h, 4999)).projects[1].key, '/scratch');
+  assert.deepEqual(metadataCommands(h, 'node cli info '), ['node cli info /checkout', 'node cli info /scratch']);
+  assert.equal((await sampleAt(h, 5000)).projects[1].key, '/repos/scratch');
+  assert.deepEqual(metadataCommands(h, 'node cli info '), [
+    'node cli info /checkout', 'node cli info /scratch', 'node cli info /scratch',
+  ]);
+});
+
+function processScans(h) {
+  return h.state.execs.filter((e) => e.cmd === 'ps' && e.argv[1] === COMBINED_PS).length;
+}
+
+for (const [name, open, window, interval] of [
+  ['popup open with the main window inactive', true, () => ({ active: false }), 2000],
+  ['popup closed and active window', false, () => ({ active: true }), 15000],
+  ['popup closed and inactive window', false, () => ({ active: false }), 30000],
+  ['popup closed without focus data', false, () => ({}), 15000],
+  ['popup closed without a window API', false, undefined, 15000],
+  ['popup closed with an unavailable window', false, () => { throw new Error('unavailable'); }, 15000],
+]) {
+  test(`schedules by completion time with ${name}`, async () => {
+    const firstScan = deferred();
+    const h = await chipHarness((cmd) => cmd === 'hc' ? ok(EMPTY_TERMINALS) : firstScan.promise, {
+      shared: [['orca.resources.open', open]],
+      window,
+    });
+    assert.equal(h.state.timers[0].ms, 1000);
+    assert.equal(processScans(h), 1);
+
+    // Even a collection longer than the cadence cannot overlap periodic work.
+    const completedAt = 31000;
+    h.tickAt(completedAt);
+    await Promise.resolve();
+    assert.equal(processScans(h), 1);
+    firstScan.resolve(ok(VALID_PS));
+    await h.flush();
+
+    h.tickAt(completedAt + interval - 1);
+    await h.flush();
+    assert.equal(processScans(h), 1);
+    h.tickAt(completedAt + interval);
+    await h.flush();
+    assert.equal(processScans(h), 2);
+  });
+}
+
+test('coalesces refresh and focus return into one follow-up during collection', async () => {
+  const firstScan = deferred();
+  let active = false;
+  let scans = 0;
+  const h = await chipHarness((cmd) => {
+    if (cmd === 'hc') return ok(EMPTY_TERMINALS);
+    return ++scans === 1 ? firstScan.promise : ok(VALID_PS);
+  }, { window: () => ({ active }) });
+
+  active = true;
+  h.state.shared.set('orca.resources.refresh', { at: 1000 });
+  h.tickAt(1000);
+  h.state.shared.set('orca.resources.refresh', { at: 2000 });
+  h.tickAt(2000);
+  await Promise.resolve();
+  assert.equal(processScans(h), 1);
+
+  firstScan.resolve(ok(VALID_PS));
+  await h.flush();
+  assert.equal(processScans(h), 2);
+  h.tickAt(3000);
+  await h.flush();
+  assert.equal(processScans(h), 2);
+});
+
+test('focus return triggers a sample before the periodic deadline', async () => {
+  let active = false;
+  const h = await chipHarness((cmd) => cmd === 'hc' ? ok(EMPTY_TERMINALS) : ok(VALID_PS), {
+    window: () => ({ active }),
+  });
+  await h.flush();
+  active = true;
+  h.tickAt(1000);
+  await h.flush();
+  assert.equal(processScans(h), 2);
+});
+
+test('opening the popup and refresh tokens trigger prompt samples through the tick', async () => {
+  let active = true;
+  const h = await chipHarness((cmd) => cmd === 'hc' ? ok(EMPTY_TERMINALS) : ok(VALID_PS), {
+    window: () => ({ active }),
+    shared: [['orca.resources.refresh', { at: 1 }]],
+  });
+  await h.flush();
+  h.tickAt(1000);
+  await h.flush();
+  assert.equal(processScans(h), 1);
+
+  active = false;
+  h.state.shared.set('orca.resources.open', true);
+  h.tickAt(2000);
+  await h.flush();
+  assert.equal(processScans(h), 2);
+
+  for (const at of [2500, 3500]) {
+    // Manual Refresh and successful PTY kills publish the same token shape.
+    const previousScans = processScans(h);
+    h.state.shared.set('orca.resources.refresh', { at });
+    h.view.render(h.cx);
+    await h.flush();
+    assert.equal(processScans(h), previousScans);
+    h.tickAt(at + 500);
+    await h.flush();
+    assert.equal(processScans(h), previousScans + 1);
+  }
+});
+
+test('destroy cancels ticks and discards pending refresh and late collection', async () => {
+  const scan = deferred();
+  const previous = { rss: 100, count: 0 };
+  const h = await chipHarness((cmd) => cmd === 'hc' ? ok(EMPTY_TERMINALS) : scan.promise, {
+    shared: [['orca.resources', previous]],
+  });
+  h.state.shared.set('orca.resources.refresh', { at: 1000 });
+  h.tickAt(1000);
+  h.view.destroy();
+  assert.equal(h.state.timers[0].canceled, true);
+  scan.resolve(ok(VALID_PS));
+  await h.flush();
+
+  h.tickAt(31000);
+  await h.flush();
+  assert.equal(processScans(h), 1);
+  assert.equal(h.state.shared.get('orca.resources'), previous);
+  assert.equal(h.state.notices, 0);
+});
+
+test('a queued refresh waits for both legacy commands after one rejects', async () => {
+  const legacyStats = deferred();
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'hc') return ok(EMPTY_TERMINALS);
+    if (argv[1] === COMBINED_PS) return { code: 1, stderr: 'ps: comm: keyword not found' };
+    if (argv[1] === LEGACY_PS) return legacyStats.promise;
+    if (argv[1] === LEGACY_COMM) throw new Error('exec failed');
+  });
+
+  h.state.shared.set('orca.resources.refresh', { at: 1000 });
+  h.tickAt(1000);
+  // Allow the rejected command to settle without releasing the stats command.
+  await new Promise((resolve) => setImmediate(resolve));
+  const listingsWhilePending = h.state.execs.filter(({ cmd }) => cmd === 'hc').length;
+  legacyStats.resolve(ok('5 1 1.0 100\n'));
+  await h.flush();
+
+  assert.equal(listingsWhilePending, 1);
+  assert.equal(h.state.execs.filter(({ cmd }) => cmd === 'hc').length, 2);
+  assert.equal(processScans(h), 1);
+});
+
+test('destroy during the combined probe prevents legacy fallback commands', async () => {
+  const scan = deferred();
+  const previous = { rss: 100, count: 0 };
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'hc') return ok(EMPTY_TERMINALS);
+    if (argv[1] === COMBINED_PS) return scan.promise;
+    return ok('5 1 1.0 100\n');
+  }, { shared: [['orca.resources', previous]] });
+
+  h.view.destroy();
+  scan.resolve({ code: 1, stderr: 'ps: comm: keyword not found' });
+  await h.flush();
+
+  assert.deepEqual(sampleCommands(h), ['hc ls --json', 'ps -axo pid=,ppid=,pcpu=,rss=,comm=']);
+  assert.equal(h.state.shared.get('orca.resources'), previous);
+  assert.equal(h.state.notices, 0);
+});
+
+test('checking mode starts no timers or commands', async () => {
+  const h = await chipHarness(() => assert.fail('unexpected exec'), { checking: true });
+  h.view.render(h.cx);
+  await h.flush();
+  assert.equal(h.state.timers.length, 0);
+  assert.deepEqual(h.state.execs, []);
 });
 
 test('non-repo place becomes its own project', async () => {
   const h = await chipHarness((cmd, argv) => {
-    if (cmd === 'ps' && argv[1] === 'pid=,ppid=,pcpu=,rss=') return { code: 0, stdout: ' 100 1 1.0 1000\n', stderr: '' };
-    if (cmd === 'ps' && argv[1] === 'pid=,comm=') return { code: 0, stdout: '', stderr: '' };
+    if (cmd === 'ps' && argv[1] === COMBINED_PS) return { code: 0, stdout: ' 100 1 1.0 1000 /bin/zsh\n', stderr: '' };
     if (cmd === 'hc' && argv[0] === 'ls') {
       return { code: 0, stdout: JSON.stringify({ terminals: [{ address: 't1', agent: 'zsh', cwd: '/tmp/scratch-dir', state: 'live' }] }), stderr: '' };
     }
@@ -212,7 +872,7 @@ test('non-repo place becomes its own project', async () => {
       return { code: 0, stdout: JSON.stringify({ pid: 100, labels: { 'herdr.space': 's1' } }), stderr: '' };
     }
     if (cmd === 'node' && argv[1] === 'info') {
-      return { code: 1, stdout: JSON.stringify({ error: 'not a git repository' }), stderr: '' };
+      return ok('{"error":"not a git repository"}');
     }
     return { code: 0, stdout: '', stderr: '' };
   }, { spaces: [{ id: 's1', name: 'scratch-dir', folder: '/tmp/scratch-dir', machine: null, tabs: [] }] });
@@ -221,25 +881,26 @@ test('non-repo place becomes its own project', async () => {
   const snap = h.state.shared.get('orca.resources');
   assert.equal(snap.projects.length, 1);
   assert.equal(snap.projects[0].name, 'scratch-dir');
+  assert.equal((await sampleAt(h, 5000)).projects[0].name, 'scratch-dir');
+  assert.equal(metadataCommands(h, 'node cli info ').length, 1);
 });
 
 test('chip text and click', async () => {
   // 2.14 GB = 2.14 * 1048576 = 2243953 KB (5 terminals * 448790 = 2243950 -> 2.14 GB)
   const h = await chipHarness((cmd, argv) => {
-    if (cmd === 'ps' && argv[1] === 'pid=,ppid=,pcpu=,rss=') {
+    if (cmd === 'ps' && argv[1] === COMBINED_PS) {
       return {
         code: 0,
         stdout: [
-          ' 101 1 1.0 448790',
-          ' 102 1 1.0 448790',
-          ' 103 1 1.0 448790',
-          ' 104 1 1.0 448790',
-          ' 105 1 1.0 448793',
+          ' 101 1 1.0 448790 /bin/zsh',
+          ' 102 1 1.0 448790 /bin/zsh',
+          ' 103 1 1.0 448790 /bin/zsh',
+          ' 104 1 1.0 448790 /bin/zsh',
+          ' 105 1 1.0 448793 /bin/zsh',
         ].join('\n'),
         stderr: '',
       };
     }
-    if (cmd === 'ps' && argv[1] === 'pid=,comm=') return { code: 0, stdout: '', stderr: '' };
     if (cmd === 'hc' && argv[0] === 'ls') {
       return {
         code: 0,
@@ -270,6 +931,119 @@ test('chip text and click', async () => {
   chipNode.attrs.on_mouse_down[1]({ bounds: { x: 400, y: 800, width: 150, height: 28 } }, h.cx);
   assert.equal(h.state.overlays.length, 1);
   assert.equal(h.state.overlays[0].open.mod, 'orca-resources-panel');
+});
+
+const VALID_PS = '5 1 1.0 100 /x/herdr-core\n';
+const LEGACY_PS = 'pid=,ppid=,pcpu=,rss=';
+const LEGACY_COMM = 'pid=,comm=';
+const EMPTY_TERMINALS = '{"terminals":[]}';
+
+function ok(stdout) {
+  return { code: 0, stdout, stderr: '' };
+}
+
+function sampleCommands(h) {
+  return h.state.execs.map(({ cmd, argv }) => [cmd, ...argv].join(' ')).sort();
+}
+
+for (const [name, combined] of [
+  ['explicitly unsupported', { code: 1, stdout: '', stderr: 'ps: comm: keyword not found' }],
+  ['unusable at startup', ok('5 1 1.0 100\n')],
+]) {
+  test(`uses the legacy scans on later samples if the combined format is ${name}`, async () => {
+    const h = await chipHarness((cmd, argv) => {
+      if (cmd === 'hc') return ok(EMPTY_TERMINALS);
+      if (argv[1] === COMBINED_PS) return combined;
+      if (argv[1] === LEGACY_PS) return ok('5 1 1.0 100\n');
+      if (argv[1] === LEGACY_COMM) return ok('5 /x/herdr-core\n');
+    });
+
+    await h.flush();
+    const initial = h.state.shared.get('orca.resources');
+    assert.equal(initial?.herdr.rss, 100);
+    assert.deepEqual(sampleCommands(h), [
+      'hc ls --json', 'ps -axo pid=,comm=', 'ps -axo pid=,ppid=,pcpu=,rss=',
+      'ps -axo pid=,ppid=,pcpu=,rss=,comm=',
+    ]);
+
+    h.state.execs.length = 0;
+    h.view.sample(h.cx);
+    await h.flush();
+    assert.notEqual(h.state.shared.get('orca.resources'), initial);
+    assert.deepEqual(sampleCommands(h), [
+      'hc ls --json', 'ps -axo pid=,comm=', 'ps -axo pid=,ppid=,pcpu=,rss=',
+    ]);
+  });
+}
+
+test('retries the combined format when an unusable startup scan and its legacy fallback fail', async () => {
+  let startup = true;
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'hc') return ok(EMPTY_TERMINALS);
+    if (argv[1] === COMBINED_PS) return ok(startup ? '' : VALID_PS);
+    if (argv[1] === LEGACY_PS) return ok('5 1 1.0 100\n');
+    if (argv[1] === LEGACY_COMM) return { ...ok('5 /x/herdr-core\n'), code: 1 };
+  });
+
+  await h.flush();
+  assert.equal(h.state.shared.has('orca.resources'), false);
+  startup = false;
+  h.state.execs.length = 0;
+  h.view.sample(h.cx);
+  await h.flush();
+  assert.equal(h.state.shared.get('orca.resources')?.herdr.rss, 100);
+  assert.deepEqual(sampleCommands(h), ['hc ls --json', 'ps -axo pid=,ppid=,pcpu=,rss=,comm=']);
+});
+
+test('retains the snapshot across transient process scan failures and keeps using the combined format', async () => {
+  let processResult = ok(VALID_PS);
+  const h = await chipHarness((cmd) => cmd === 'hc' ? ok(EMPTY_TERMINALS) : processResult);
+
+  await h.flush();
+  const initial = h.state.shared.get('orca.resources');
+  assert.equal(initial?.herdr.rss, 100);
+  for (const failed of [ok('garbled data'), { ...ok(VALID_PS), code: 1, stderr: 'temporarily unavailable' }]) {
+    processResult = failed;
+    h.state.execs.length = 0;
+    h.view.sample(h.cx);
+    await h.flush();
+    assert.equal(h.state.shared.get('orca.resources'), initial);
+    assert.deepEqual(sampleCommands(h), ['hc ls --json', 'ps -axo pid=,ppid=,pcpu=,rss=,comm=']);
+  }
+
+  processResult = ok('5 1 1.0 200 /x/herdr-core\n');
+  h.view.sample(h.cx);
+  await h.flush();
+  const next = h.state.shared.get('orca.resources');
+  assert.equal(next.herdr.rss, 200);
+  assert.deepEqual(Array.from(next.herdrHistory), [100, 200]);
+});
+
+test('retains the snapshot for invalid terminal listings and publishes a valid empty listing', async () => {
+  let terminalResult = ok(JSON.stringify({
+    terminals: [{ address: 't1', state: 'live', pid: 6, labels: {} }],
+  }));
+  const h = await chipHarness((cmd) => cmd === 'hc' ? terminalResult : ok(VALID_PS));
+
+  await h.flush();
+  const initial = h.state.shared.get('orca.resources');
+  assert.equal(initial?.other[0].address, 't1');
+
+  for (const failed of [ok('malformed'), ok('{}'), ok('null'), { ...ok(EMPTY_TERMINALS), code: 1 }]) {
+    terminalResult = failed;
+    h.view.sample(h.cx);
+    await h.flush();
+    assert.equal(h.state.shared.get('orca.resources'), initial);
+  }
+
+  terminalResult = ok(EMPTY_TERMINALS);
+  h.view.sample(h.cx);
+  await h.flush();
+  const next = h.state.shared.get('orca.resources');
+  assert.notEqual(next, initial);
+  assert.equal(next.count, 0);
+  assert.equal(next.other.length, 0);
+  assert.equal(next.herdr.rss, 100);
 });
 
 async function panelHarness(opts = {}) {
@@ -613,3 +1387,88 @@ test('resources tab End button confirms and kills terminal without focusing it',
 
 
 
+test('folded projects defer worktree sorting until expanded', async () => {
+  const snap = sampleSnap();
+  const [project] = snap.projects;
+  const [worktree] = project.worktrees;
+  const smaller = { key: '/repos/small', name: 'small', cpu: 0, rss: 0, terminals: [] };
+  project.worktrees.unshift(smaller);
+  const h = await panelHarness({
+    shared: [['orca.resources', snap]],
+    storage: [['resources.folded', JSON.stringify([`p:${project.key}`])]],
+  });
+
+  const folded = nodes(h.view.render(h.cx));
+  const header = folded.find((n) => n.attrs.id === `proj-${project.key}`);
+  assert.deepEqual(texts(header), ['▸', 'HERDR-ORCA-WORKTREES', '3.0%', '2.09 GB']);
+  assert.equal(folded.some((n) => n.attrs.id?.startsWith('wt-')), false);
+
+  header.attrs.on_click({}, h.cx);
+  const expanded = nodes(h.view.render(h.cx));
+  assert.deepEqual(
+    expanded.filter((n) => n.attrs.id?.startsWith('wt-')).map((n) => n.attrs.id),
+    [`wt-${worktree.key}`, `wt-${smaller.key}`],
+  );
+  assert.equal(h.view.orderCache.has(`p:${project.key}`), true);
+
+  header.attrs.on_click({}, h.cx);
+  h.view.orderCache.clear();
+  h.view.render(h.cx);
+  assert.equal(h.view.orderCache.has(`p:${project.key}`), false, 'folded project sorted its worktrees');
+});
+
+test('folded worktrees defer terminal sorting until expanded', async () => {
+  const snap = sampleSnap();
+  const [worktree] = snap.projects[0].worktrees;
+  const h = await panelHarness({
+    shared: [['orca.resources', snap]],
+    storage: [['resources.folded', JSON.stringify([`w:${worktree.key}`])]],
+  });
+
+  const folded = nodes(h.view.render(h.cx));
+  const header = folded.find((n) => n.attrs.id === `wt-${worktree.key}`);
+  assert.deepEqual(texts(header), ['▸', 'feat/projects-sidebar', '3.0%', '2.09 GB']);
+  assert.equal(folded.some((n) => n.attrs.id?.startsWith('res-term-')), false);
+
+  header.attrs.on_click({}, h.cx);
+  const expanded = nodes(h.view.render(h.cx));
+  assert.deepEqual(
+    expanded.filter((n) => n.attrs.id?.startsWith('res-term-')).map((n) => n.attrs.id),
+    ['res-term-t2', 'res-term-t1'],
+  );
+  assert.equal(h.view.orderCache.has(`w:${worktree.key}`), true);
+
+  header.attrs.on_click({}, h.cx);
+  h.view.orderCache.clear();
+  h.view.render(h.cx);
+  assert.equal(h.view.orderCache.has(`w:${worktree.key}`), false, 'folded worktree sorted its terminals');
+});
+
+test('clears stale repo grouping and watch when a live worktree becomes an ordinary folder', async () => {
+  const watches = watchFixture();
+  let isRepo = true;
+  const h = await watchHarness(['/linked'], watches, () => (
+    isRepo
+      ? ok('{"primary":"/app","gitCommonDir":"/app/.git"}')
+      : ok('{"error":"not a git repository"}')
+  ));
+  assert.deepEqual(watches.calls.map(({ path }) => path), ['/app/.git/worktrees']);
+  assert.equal(h.state.shared.get('orca.resources').projects[0].key, '/app');
+
+  isRepo = false;
+  watches.calls[0].resolve(['/app/.git/worktrees/linked/gitdir']);
+  await h.flush();
+  await sampleAt(h, 300);
+
+  const snap = h.state.shared.get('orca.resources');
+  assert.equal(snap.projects[0].key, '/linked');
+  assert.equal(snap.projects[0].name, 'linked');
+  assert.equal(watches.calls.length, 2);
+  assert.equal(watches.calls[1].canceled, true);
+  assert.equal(h.view.repoWatches.size, 0);
+
+  h.state.execs.length = 0;
+  await sampleAt(h, 5300);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 0);
+  assert.equal(h.state.shared.get('orca.resources').projects[0].key, '/linked');
+});

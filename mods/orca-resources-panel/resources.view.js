@@ -67,7 +67,6 @@ export function renderResourcesTab(view, t, snap) {
         .children(
           projects.map((proj) => {
             const projFolded = view.folded.has(`p:${proj.key}`);
-            const worktrees = view.sortStable(proj.worktrees, (w) => w.key, `p:${proj.key}`);
             return v_flex()
               .w_full()
               .child(
@@ -93,9 +92,8 @@ export function renderResourcesTab(view, t, snap) {
               )
               .when(!projFolded, (el) =>
                 el.children(
-                  worktrees.map((wt) => {
+                  view.sortStable(proj.worktrees, (w) => w.key, `p:${proj.key}`).map((wt) => {
                     const wtFolded = view.folded.has(`w:${wt.key}`);
-                    const terms = view.sortStable(wt.terminals, (r) => r.address, `w:${wt.key}`);
                     return v_flex()
                       .w_full()
                       .child(
@@ -123,7 +121,7 @@ export function renderResourcesTab(view, t, snap) {
                       )
                       .when(!wtFolded, (el2) =>
                         el2.children(
-                          terms.map((row) =>
+                          view.sortStable(wt.terminals, (r) => r.address, `w:${wt.key}`).map((row) =>
                             h_flex()
                               .id(`res-term-${row.address}`)
                               .w_full()
