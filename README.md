@@ -15,3 +15,13 @@ bash scripts/install.sh
 ```json
 {"id": "orca-resources", "type": "block", "size": {"px": 150}, "content": {"mod": "orca-resources"}}
 ```
+
+## Rust CLI (optional)
+
+`rust/` is a Rust port of `bin/orca-wt.js` (same subcommands, same JSON on stdout). To build it and point the installed mods at the binary:
+
+```bash
+bash scripts/install-rust.sh
+```
+
+Switch back to the Node CLI with `bash scripts/install.sh`.
