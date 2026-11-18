@@ -11,6 +11,7 @@ import {
   terminals,
   checking,
   window,
+  watchFolder,
 } from "herdr";
 import config from "./config.js";
 import {
@@ -25,6 +26,8 @@ import {
 import { placeOf } from "./place.js";
 
 const METADATA_RETRY_MS = 5000;
+const REPO_RECONCILE_MS = 60000;
+const REPO_WATCH_DEBOUNCE_MS = 250;
 const TERMINAL_LOOKUP_WORKERS = 4;
 
 function terminalLabels(labels) {
@@ -36,6 +39,21 @@ function baseName(p) {
   const trimmed = String(p).replace(/[/\\]+$/, "");
   const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
   return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
+}
+
+function repoWatchPath(parsed) {
+  const commonDir = parsed.gitCommonDir;
+  return typeof commonDir === "string" && commonDir.startsWith("/")
+    ? commonDir.replace(/\/+$/, "") + "/worktrees"
+    : null;
+}
+
+function affectsRepo(path, root) {
+  if (path === root) return true;
+  if (typeof path !== "string" || !path.startsWith(root + "/")) return false;
+  const [, metadata] = path.slice(root.length + 1).split("/", 2);
+  // These files change during ordinary commands in a linked worktree.
+  return !["index", "index.lock", "logs", "refs"].includes(metadata);
 }
 
 function parseCommands(text) {
@@ -73,6 +91,7 @@ export default class OrcaResources extends View {
     this.lastRefresh = shared("orca.resources.refresh")?.at ?? null;
     this.termCache = new Map();
     this.repoCache = new Map();
+    this.repoWatches = new Map();
     this.history = new Map();
 
     if (checking()) return;
@@ -88,6 +107,7 @@ export default class OrcaResources extends View {
     this.samplePending = false;
     this.sampleTimer?.cancel();
     this.sampleTimer = null;
+    this.cancelRepoWatches();
   }
 
   requestSample(cx) {
@@ -121,11 +141,78 @@ export default class OrcaResources extends View {
     if (Date.now() - this.lastSampleAt >= interval) this.sample(cx);
   }
 
+  cancelRepoWatches() {
+    const watches = [...this.repoWatches.values()];
+    this.repoWatches.clear();
+    for (const watch of watches) watch.handle?.cancel();
+  }
+
+  armRepoWatch(path, watch) {
+    try {
+      const handle = watchFolder(path);
+      watch.handle = handle;
+      const finish = (paths) => {
+        if (this.destroyed || this.repoWatches.get(path) !== watch || watch.handle !== handle) return;
+        watch.handle = null;
+        if (!paths?.length) {
+          watch.retryAt = Date.now() + REPO_RECONCILE_MS;
+          return;
+        }
+        if (paths.some((changed) => affectsRepo(changed, path))) {
+          watch.dirtyAt = Date.now() + REPO_WATCH_DEBOUNCE_MS;
+        }
+        this.armRepoWatch(path, watch);
+      };
+      handle.then(finish, () => finish([]));
+    } catch {
+      watch.handle = null;
+      watch.retryAt = Date.now() + REPO_RECONCILE_MS;
+    }
+  }
+
+  syncRepoWatches(_cx, activePlaces, now) {
+    if (typeof watchFolder !== "function") return;
+    const placesByPath = new Map();
+    for (const place of activePlaces) {
+      const path = this.repoCache.get(place)?.watchPath;
+      if (!path) continue;
+      if (!placesByPath.has(path)) placesByPath.set(path, new Set());
+      placesByPath.get(path).add(place);
+    }
+    for (const [path, watch] of this.repoWatches) {
+      if (placesByPath.has(path)) continue;
+      this.repoWatches.delete(path);
+      watch.handle?.cancel();
+    }
+    for (const [path, places] of placesByPath) {
+      let watch = this.repoWatches.get(path);
+      if (!watch) {
+        watch = { handle: null, places, dirtyAt: null, retryAt: 0 };
+        this.repoWatches.set(path, watch);
+      }
+      watch.places = places;
+      if (!watch.handle && now >= watch.retryAt) this.armRepoWatch(path, watch);
+    }
+  }
+
+  invalidateRepoWatches(now) {
+    for (const watch of this.repoWatches.values()) {
+      if (watch.dirtyAt == null || now < watch.dirtyAt) continue;
+      watch.dirtyAt = null;
+      for (const place of watch.places) {
+        const cached = this.repoCache.get(place);
+        if (cached) cached.freshAt = null;
+      }
+    }
+  }
+
   async resolveRepo(place, now) {
     if (!place) return { key: "", name: "" };
     const fallback = { key: place, name: baseName(place) || place };
     const cached = this.repoCache.get(place);
-    if (cached?.freshAt != null || now < cached?.retryAt) return cached.result ?? fallback;
+    const watched = this.repoWatches.get(cached?.watchPath)?.handle;
+    const fresh = cached?.freshAt != null && (watched || now - cached.freshAt < REPO_RECONCILE_MS);
+    if (fresh || now < cached?.retryAt) return cached.result ?? fallback;
 
     try {
       const res = await exec(config.node, [config.cli, "info", place], { timeout: 10000 });
@@ -133,7 +220,9 @@ export default class OrcaResources extends View {
         const parsed = JSON.parse(res.stdout);
         if (typeof parsed?.primary === "string" && parsed.primary && !parsed.error) {
           const result = { key: parsed.primary, name: baseName(parsed.primary) || parsed.primary };
-          this.repoCache.set(place, { result, freshAt: Date.now(), retryAt: 0 });
+          this.repoCache.set(place, {
+            result, watchPath: repoWatchPath(parsed), freshAt: Date.now(), retryAt: 0,
+          });
           return result;
         }
         if (parsed?.error === "not a git repository" && !cached?.result) {
@@ -143,7 +232,9 @@ export default class OrcaResources extends View {
       }
     } catch {}
     const result = cached?.result ?? null;
-    this.repoCache.set(place, { result, freshAt: null, retryAt: Date.now() + METADATA_RETRY_MS });
+    this.repoCache.set(place, {
+      result, watchPath: cached?.watchPath, freshAt: null, retryAt: Date.now() + METADATA_RETRY_MS,
+    });
     return result ?? fallback;
   }
 
@@ -255,7 +346,10 @@ export default class OrcaResources extends View {
           if (!addresses.has(address)) this.termCache.delete(address);
         }
 
-        if (!liveEntries.length) this.repoCache.clear();
+        if (!liveEntries.length) {
+          this.repoCache.clear();
+          this.cancelRepoWatches();
+        }
         if (processes.status !== "fulfilled") return;
         const { procs, commands } = processes.value;
 
@@ -299,8 +393,12 @@ export default class OrcaResources extends View {
         for (const place of this.repoCache.keys()) {
           if (!places.has(place)) this.repoCache.delete(place);
         }
-        await Promise.all(Array.from(places, (place) => this.resolveRepo(place, metadataAt)));
+        const repoAt = Date.now();
+        // Consume due events before lookups so new batches survive the sample.
+        this.invalidateRepoWatches(repoAt);
+        await Promise.all(Array.from(places, (place) => this.resolveRepo(place, repoAt)));
         if (this.destroyed) return;
+        this.syncRepoWatches(cx, places, Date.now());
 
         const totals = subtreeTotals(procs, roots);
         const stopAt = new Set(roots);
