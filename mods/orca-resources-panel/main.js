@@ -426,7 +426,6 @@ export default class OrcaResourcesPanel extends View {
           .children(
             projects.map((proj) => {
               const projFolded = this.folded.has(`p:${proj.key}`);
-              const worktrees = this.sortStable(proj.worktrees, (w) => w.key, `p:${proj.key}`);
               return v_flex()
                 .w_full()
                 .child(
@@ -452,9 +451,8 @@ export default class OrcaResourcesPanel extends View {
                 )
                 .when(!projFolded, (el) =>
                   el.children(
-                    worktrees.map((wt) => {
+                    this.sortStable(proj.worktrees, (w) => w.key, `p:${proj.key}`).map((wt) => {
                       const wtFolded = this.folded.has(`w:${wt.key}`);
-                      const terms = this.sortStable(wt.terminals, (r) => r.address, `w:${wt.key}`);
                       return v_flex()
                         .w_full()
                         .child(
@@ -482,7 +480,7 @@ export default class OrcaResourcesPanel extends View {
                         )
                         .when(!wtFolded, (el2) =>
                           el2.children(
-                            terms.map((row) =>
+                            this.sortStable(wt.terminals, (r) => r.address, `w:${wt.key}`).map((row) =>
                               h_flex()
                                 .id(`res-term-${row.address}`)
                                 .w_full()
