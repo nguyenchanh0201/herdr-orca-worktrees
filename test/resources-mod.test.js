@@ -41,7 +41,9 @@ async function chipHarness(execStub, opts = {}) {
     spaces: opts.spaces ?? [],
     panes: opts.panes ?? [],
     terminals: opts.terminals ?? [],
-    checking: false,
+    checking: opts.checking ?? false,
+    now: 0,
+    window: Object.hasOwn(opts, 'window') ? opts.window : () => ({ active: true }),
     notices: 0,
     timers: [],
   };
@@ -50,7 +52,13 @@ async function chipHarness(execStub, opts = {}) {
     notify() { state.notices++; },
     stop_propagation() {},
     spawn(fn) { pending.push(Promise.resolve().then(() => fn(cx))); },
-    timer: { every(ms, fn) { state.timers.push({ ms, fn }); } },
+    timer: {
+      every(ms, fn) {
+        const timer = { ms, fn, canceled: false, cancel() { this.canceled = true; } };
+        state.timers.push(timer);
+        return timer;
+      },
+    },
   };
   const context = {
     ...await import('../mods/orca-resources/tree.js'),
@@ -83,7 +91,8 @@ async function chipHarness(execStub, opts = {}) {
       state.execs.push({ cmd, argv: argv ?? [], options });
       return execStub(cmd, argv ?? [], options);
     },
-    Date,
+    window: state.window,
+    Date: { now: () => state.now },
   };
   const source = fs.readFileSync(require.resolve('../mods/orca-resources/main.js'), 'utf8')
     .replace(/^import\b[\s\S]*?;\n/gm, '')
@@ -95,6 +104,12 @@ async function chipHarness(execStub, opts = {}) {
     view,
     cx,
     state,
+    tickAt(now) {
+      state.now = now;
+      for (const timer of state.timers) {
+        if (!timer.canceled) timer.fn(cx);
+      }
+    },
     async flush() {
       while (pending.length) await Promise.all(pending.splice(0));
     },
@@ -191,20 +206,143 @@ test('pids are looked up once', async () => {
   assert.equal(gets.length, 1);
 });
 
-test('skips a sample while one is running', async () => {
-  let resolvePs;
-  const neverPs = new Promise((r) => { resolvePs = r; });
-  const h = await chipHarness((cmd, argv) => {
-    if (cmd === 'ps' && argv[1] === COMBINED_PS) return neverPs;
-    return { code: 0, stdout: '{}', stderr: '' };
-  });
+function deferred() {
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  return { promise, resolve };
+}
 
+function processScans(h) {
+  return h.state.execs.filter((e) => e.cmd === 'ps' && e.argv[1] === COMBINED_PS).length;
+}
+
+for (const [name, open, window, interval] of [
+  ['popup open with the main window inactive', true, () => ({ active: false }), 2000],
+  ['popup closed and active window', false, () => ({ active: true }), 15000],
+  ['popup closed and inactive window', false, () => ({ active: false }), 30000],
+  ['popup closed without focus data', false, () => ({}), 15000],
+  ['popup closed without a window API', false, undefined, 15000],
+  ['popup closed with an unavailable window', false, () => { throw new Error('unavailable'); }, 15000],
+]) {
+  test(`schedules by completion time with ${name}`, async () => {
+    const firstScan = deferred();
+    const h = await chipHarness((cmd) => cmd === 'hc' ? ok(EMPTY_TERMINALS) : firstScan.promise, {
+      shared: [['orca.resources.open', open]],
+      window,
+    });
+    assert.equal(h.state.timers[0].ms, 1000);
+    assert.equal(processScans(h), 1);
+
+    // Even a collection longer than the cadence cannot overlap periodic work.
+    const completedAt = 31000;
+    h.tickAt(completedAt);
+    await Promise.resolve();
+    assert.equal(processScans(h), 1);
+    firstScan.resolve(ok(VALID_PS));
+    await h.flush();
+
+    h.tickAt(completedAt + interval - 1);
+    await h.flush();
+    assert.equal(processScans(h), 1);
+    h.tickAt(completedAt + interval);
+    await h.flush();
+    assert.equal(processScans(h), 2);
+  });
+}
+
+test('coalesces refresh and focus return into one follow-up during collection', async () => {
+  const firstScan = deferred();
+  let active = false;
+  let scans = 0;
+  const h = await chipHarness((cmd) => {
+    if (cmd === 'hc') return ok(EMPTY_TERMINALS);
+    return ++scans === 1 ? firstScan.promise : ok(VALID_PS);
+  }, { window: () => ({ active }) });
+
+  active = true;
+  h.state.shared.set('orca.resources.refresh', { at: 1000 });
+  h.tickAt(1000);
+  h.state.shared.set('orca.resources.refresh', { at: 2000 });
+  h.tickAt(2000);
   await Promise.resolve();
-  h.view.sample(h.cx);
-  await Promise.resolve();
-  assert.equal(h.state.execs.filter((e) => e.cmd === 'ps' && e.argv[1] === COMBINED_PS).length, 1);
-  resolvePs({ code: 0, stdout: '', stderr: '' });
+  assert.equal(processScans(h), 1);
+
+  firstScan.resolve(ok(VALID_PS));
   await h.flush();
+  assert.equal(processScans(h), 2);
+  h.tickAt(3000);
+  await h.flush();
+  assert.equal(processScans(h), 2);
+});
+
+test('focus return triggers a sample before the periodic deadline', async () => {
+  let active = false;
+  const h = await chipHarness((cmd) => cmd === 'hc' ? ok(EMPTY_TERMINALS) : ok(VALID_PS), {
+    window: () => ({ active }),
+  });
+  await h.flush();
+  active = true;
+  h.tickAt(1000);
+  await h.flush();
+  assert.equal(processScans(h), 2);
+});
+
+test('opening the popup and refresh tokens trigger prompt samples through the tick', async () => {
+  let active = true;
+  const h = await chipHarness((cmd) => cmd === 'hc' ? ok(EMPTY_TERMINALS) : ok(VALID_PS), {
+    window: () => ({ active }),
+    shared: [['orca.resources.refresh', { at: 1 }]],
+  });
+  await h.flush();
+  h.tickAt(1000);
+  await h.flush();
+  assert.equal(processScans(h), 1);
+
+  active = false;
+  h.state.shared.set('orca.resources.open', true);
+  h.tickAt(2000);
+  await h.flush();
+  assert.equal(processScans(h), 2);
+
+  for (const at of [2500, 3500]) {
+    // Manual Refresh and successful PTY kills publish the same token shape.
+    const previousScans = processScans(h);
+    h.state.shared.set('orca.resources.refresh', { at });
+    h.view.render(h.cx);
+    await h.flush();
+    assert.equal(processScans(h), previousScans);
+    h.tickAt(at + 500);
+    await h.flush();
+    assert.equal(processScans(h), previousScans + 1);
+  }
+});
+
+test('destroy cancels ticks and discards pending refresh and late collection', async () => {
+  const scan = deferred();
+  const previous = { rss: 100, count: 0 };
+  const h = await chipHarness((cmd) => cmd === 'hc' ? ok(EMPTY_TERMINALS) : scan.promise, {
+    shared: [['orca.resources', previous]],
+  });
+  h.state.shared.set('orca.resources.refresh', { at: 1000 });
+  h.tickAt(1000);
+  h.view.destroy();
+  assert.equal(h.state.timers[0].canceled, true);
+  scan.resolve(ok(VALID_PS));
+  await h.flush();
+
+  h.tickAt(31000);
+  await h.flush();
+  assert.equal(processScans(h), 1);
+  assert.equal(h.state.shared.get('orca.resources'), previous);
+  assert.equal(h.state.notices, 0);
+});
+
+test('checking mode starts no timers or commands', async () => {
+  const h = await chipHarness(() => assert.fail('unexpected exec'), { checking: true });
+  h.view.render(h.cx);
+  await h.flush();
+  assert.equal(h.state.timers.length, 0);
+  assert.deepEqual(h.state.execs, []);
 });
 
 test('non-repo place becomes its own project', async () => {

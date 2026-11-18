@@ -10,6 +10,7 @@ import {
   panes,
   terminals,
   checking,
+  window,
 } from "herdr";
 import config from "./config.js";
 import {
@@ -45,10 +46,21 @@ function parseCommands(text) {
   return map;
 }
 
+function windowActive() {
+  try {
+    return typeof window === "function" ? window()?.active : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export default class OrcaResources extends View {
   init(_p, cx) {
     this.snapshot = shared("orca.resources") ?? null;
     this.sampling = false;
+    this.samplePending = false;
+    this.destroyed = false;
+    this.sampleTimer = null;
     this.processFormat = null;
     this.lastSampleAt = 0;
     this.lastRefresh = shared("orca.resources.refresh")?.at ?? null;
@@ -58,27 +70,48 @@ export default class OrcaResources extends View {
 
     if (checking()) return;
 
-    this.sample(cx);
-    cx.timer.every(1000, (cx) => this.tick(cx));
+    this.popupOpen = Boolean(shared("orca.resources.open"));
+    this.lastWindowActive = windowActive();
+    this.requestSample(cx);
+    this.sampleTimer = cx.timer.every(1000, (cx) => this.tick(cx));
   }
 
-  checkRefresh(cx) {
-    const req = shared("orca.resources.refresh");
-    if (req?.at && req.at !== this.lastRefresh) {
-      this.lastRefresh = req.at;
+  destroy() {
+    this.destroyed = true;
+    this.samplePending = false;
+    this.sampleTimer?.cancel();
+    this.sampleTimer = null;
+  }
+
+  requestSample(cx) {
+    if (this.destroyed || checking()) return;
+    if (this.sampling) {
+      this.samplePending = true;
+    } else {
       this.sample(cx);
-      return true;
     }
-    return false;
   }
 
   tick(cx) {
-    if (checking()) return;
-    if (this.checkRefresh(cx)) return;
-    const interval = shared("orca.resources.open") ? 2000 : 5000;
-    if (Date.now() - this.lastSampleAt >= interval) {
-      this.sample(cx);
+    if (this.destroyed || checking()) return;
+
+    const open = Boolean(shared("orca.resources.open"));
+    const active = windowActive();
+    const refresh = shared("orca.resources.refresh")?.at;
+    const refreshRequested = refresh != null && refresh !== this.lastRefresh;
+    const popupOpened = open && !this.popupOpen;
+    const focusReturned = active === true && this.lastWindowActive === false;
+    this.popupOpen = open;
+    if (typeof active === "boolean") this.lastWindowActive = active;
+
+    if (popupOpened || focusReturned || refreshRequested) {
+      this.requestSample(cx);
+      if (refreshRequested) this.lastRefresh = refresh;
+      return;
     }
+
+    const interval = open ? 2000 : active === false ? 30000 : 15000;
+    if (Date.now() - this.lastSampleAt >= interval) this.sample(cx);
   }
 
   async resolveRepo(place) {
@@ -165,16 +198,17 @@ export default class OrcaResources extends View {
   }
 
   sample(cx) {
-    if (this.sampling) return;
+    if (this.destroyed || this.sampling || checking()) return;
     this.sampling = true;
 
     cx.spawn(async (cx) => {
       try {
+        if (this.destroyed) return;
         const [processes, terminalsResult] = await Promise.allSettled([
           this.collectProcesses(),
           exec("hc", ["ls", "--json"], { timeout: 5000 }),
         ]);
-        if (processes.status !== "fulfilled" || terminalsResult.status !== "fulfilled" ||
+        if (this.destroyed || processes.status !== "fulfilled" || terminalsResult.status !== "fulfilled" ||
             terminalsResult.value?.code !== 0) return;
 
         const { procs, commands } = processes.value;
@@ -193,6 +227,7 @@ export default class OrcaResources extends View {
         const metas = await Promise.all(
           liveEntries.map((e) => this.resolveTerminalMeta(e, herdrTerms)),
         );
+        if (this.destroyed) return;
 
         const termRows = [];
         const places = new Set();
@@ -223,6 +258,7 @@ export default class OrcaResources extends View {
         }
 
         await Promise.all(Array.from(places).map((p) => this.resolveRepo(p)));
+        if (this.destroyed) return;
 
         const totals = subtreeTotals(procs, roots);
         const stopAt = new Set(roots);
@@ -260,14 +296,19 @@ export default class OrcaResources extends View {
         // Keep last good snapshot on transient failure.
       } finally {
         this.sampling = false;
-        this.lastSampleAt = Date.now();
-        cx.notify();
+        if (!this.destroyed) {
+          this.lastSampleAt = Date.now();
+          if (this.samplePending) {
+            this.samplePending = false;
+            this.sample(cx);
+          }
+          cx.notify();
+        }
       }
     });
   }
 
-  render(cx) {
-    if (!checking()) this.checkRefresh(cx);
+  render() {
     const t = theme();
     const snap = this.snapshot ?? shared("orca.resources");
     const memText = snap ? fmtMem(snap.rss) : "—";
