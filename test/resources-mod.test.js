@@ -323,6 +323,40 @@ test('evicts absent terminals and repo places after a valid listing', async () =
   assert.equal(metadataCommands(h, 'node cli info ').length, 2);
 });
 
+test('evicts terminal and repo metadata from a valid empty listing when the process scan fails', async () => {
+  let listing = terminalListing([{ address: 't1' }]);
+  let processResult = ok(VALID_PS);
+  let pid = 6;
+  let primary = '/old';
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'ps') return processResult;
+    if (argv[0] === 'ls') return listing;
+    if (cmd === 'node') return ok(JSON.stringify({ primary }));
+    return ok(JSON.stringify({ pid, labels: { 'herdr.space': 's1' } }));
+  }, { spaces: [{ id: 's1', folder: '/checkout', tabs: [] }] });
+
+  await h.flush();
+  const initial = h.state.shared.get('orca.resources');
+  assert.equal(initial?.projects[0]?.key, '/old');
+  assert.equal(initial.projects[0].worktrees[0].terminals[0].pid, 6);
+
+  listing = terminalListing([]);
+  processResult = { code: 1, stdout: '', stderr: 'temporarily unavailable' };
+  assert.equal(await sampleAt(h, 1000), initial);
+  assert.equal(metadataCommands(h, 'hc get ').length, 1);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 1);
+
+  listing = terminalListing([{ address: 't1' }]);
+  processResult = ok(VALID_PS);
+  pid = 7;
+  primary = '/new';
+  const next = await sampleAt(h, 2000);
+  assert.equal(next.projects[0].key, '/new');
+  assert.equal(next.projects[0].worktrees[0].terminals[0].pid, 7);
+  assert.equal(metadataCommands(h, 'hc get ').length, 2);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 2);
+});
+
 for (const [name, failed] of [
   ['failed', { code: 1, stdout: '' }],
   ['incomplete', ok('{"labels":{}}')],

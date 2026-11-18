@@ -240,10 +240,9 @@ export default class OrcaResources extends View {
           this.collectProcesses(),
           exec("hc", ["ls", "--json"], { timeout: 5000 }),
         ]);
-        if (this.destroyed || processes.status !== "fulfilled" || terminalsResult.status !== "fulfilled" ||
+        if (this.destroyed || terminalsResult.status !== "fulfilled" ||
             terminalsResult.value?.code !== 0) return;
 
-        const { procs, commands } = processes.value;
         const hcEntries = JSON.parse(terminalsResult.value.stdout)?.terminals;
         if (!Array.isArray(hcEntries)) return;
 
@@ -255,6 +254,10 @@ export default class OrcaResources extends View {
         for (const address of this.termCache.keys()) {
           if (!addresses.has(address)) this.termCache.delete(address);
         }
+
+        if (!liveEntries.length) this.repoCache.clear();
+        if (processes.status !== "fulfilled") return;
+        const { procs, commands } = processes.value;
 
         const sps = spaces();
         const psList = panes();
