@@ -24,7 +24,28 @@ else
 fi
 
 [[ -f "$BIN" && -x "$BIN" ]] || { echo "orca-wt is not an executable file: $BIN" >&2; exit 1; }
-config=$(node -p 'JSON.stringify({ node: process.argv[1], cli: "--" })' "$BIN")
+# Validate the same read-only command and argument separator used by the mods.
+if ! config=$(node - "$BIN" <<'NODE'
+const { execFileSync } = require('node:child_process');
+
+const binary = process.argv[2];
+try {
+  const response = execFileSync(binary, ['--', 'sleep', 'get'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 5000,
+    killSignal: 'SIGKILL',
+  });
+  if (JSON.parse(response)?.sleeping !== false) process.exit(1);
+} catch {
+  process.exit(1);
+}
+console.log(JSON.stringify({ node: binary, cli: '--' }));
+NODE
+); then
+  printf 'orca-wt failed the JSON probe: %s\n' "$BIN" >&2
+  exit 1
+fi
 
 shopt -s nullglob
 for cfg in "$HERDR_APP_HOME"/mods/*/config.js; do
