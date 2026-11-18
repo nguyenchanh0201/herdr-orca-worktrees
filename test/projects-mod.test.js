@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { readModSource } = require('./helpers/modsource');
 
 // Only the native GPUI/Herdr boundary is replaced; methods and grouping stay real.
 function element(kind, path) {
@@ -55,8 +56,7 @@ async function harness(respond = () => ({}), overlayProps = null) {
     },
   };
   const className = overlayProps ? 'OrcaProject' : 'Projects';
-  const source = fs.readFileSync(require.resolve(`../mods/${overlayProps ? 'orca-project' : 'projects'}/main.js`), 'utf8')
-    .replace(/^import .*;\n/gm, '').replace(`export default class ${className}`, `class ${className}`);
+  const source = readModSource(overlayProps ? 'orca-project' : 'projects');
   vm.runInNewContext(`${source}\nthis.Mod = ${className};`, context);
   const view = new context.Mod();
   view.init({}, cx);
@@ -399,7 +399,7 @@ test('sleeping worktree card shows a dimmed strip with a moon', async () => {
   const tree = h.view.render();
   const strip = nodes(tree).find((n) => n.attrs.id === 'strip-/wt/s');
   assert.ok(strip);
-  assert.ok(nodes(strip).some((n) => n.kind === 'svg' && n.path === 'mods/projects/moon.svg'));
+  assert.ok(nodes(strip).some((n) => n.kind === 'svg' && n.path === 'orca-icons/moon.svg'));
   const title = nodes(tree).find((n) => n.attrs.id === 'sleep-/wt/s');
   assert.ok(title);
   title.attrs.on_click({}, h.cx);

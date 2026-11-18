@@ -111,7 +111,7 @@ Switch back to the Node CLI with `bash scripts/install.sh`.
 
 ```bash
 cd ~/.config/herdr-app
-rm -rf mods/{orca-setup,orca-remove,projects,orca-worktree,orca-project,orca-usage,orca-usage-panel,orca-tabs,orca-resources,orca-resources-panel}
+rm -rf mods/{orca-setup,orca-remove,projects,orca-worktree,orca-project,orca-usage,orca-usage-panel,orca-tabs,orca-resources,orca-resources-panel} orca-icons
 rm layouts/orca.json
 ```
 
