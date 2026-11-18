@@ -2,6 +2,53 @@
 
 Orca-style chrome for [Herdr.app](https://herdr.dev): a projects sidebar with worktree cards, sleep and wake, project icons and groups, "Open in" editors, usage meters, and a resource manager. All of it is Herdr **mods** plus a small Node CLI (`orca-wt`). Herdr itself isn't changed.
 
+![Herdr with the orca layout](docs/screenshots/overview.png)
+
+## Features
+
+<img src="docs/screenshots/sidebar.png" alt="Projects sidebar" width="260" align="right">
+
+### Projects sidebar
+
+- **A tree of project groups, projects and worktrees.** Each project shows its GitHub avatar, a repo icon or a coloured letter. You can **Rename…** or **Change icon…** from the right-click menu.
+- **Worktree cards.** The selected card is outlined.
+  - The `main` badge marks the main checkout.
+  - The agents fold into one strip that shows the most urgent status (blocked `!`, working `●`, done `✓`, idle `○`).
+  - Click the strip for the list. Each row reads like "Working - Claude Code", and clicking it jumps to that agent.
+- **New worktree with an agent:** use `+` on a project header. Agents start with full access.
+- **Sleep and wake:** sleep quits a worktree's agents and remembers how to resume them (🌙). Wake brings them back in the same conversations. A half-typed draft is never lost.
+- **Right-click menus:**
+  - **Open in ›** VS Code, Zed, Xcode, Finder and more, plus **Customize apps…**.
+  - **Project Group ›** to put related repos in a group that folds as one.
+
+<br clear="right">
+
+### Usage meters and resource manager
+
+![Status bar](docs/screenshots/status-bar.png)
+
+**Usage meters (left):** the bottom bar shows how much of your Claude, Codex and Antigravity plan you've used, and when each window resets. Click it for an Orca-style popup with Detailed or Compact rows.
+
+<img src="docs/screenshots/resource-manager.png" alt="Resource Manager" width="320" align="right">
+
+**Resource chip (right):** `▭ 769 MB · >_ 13` is the total memory of every terminal plus Herdr itself, and the number of terminals. Click it for the **Resource Manager**:
+
+- **Resources:**
+  - CPU and memory for each project, worktree and terminal, sortable by any column.
+  - A 2-minute memory graph for each worktree.
+  - Click a terminal to jump to it.
+- **PTYs:** every Herdr terminal with its details. Jump to one, or **End** one or several (it always asks first).
+
+It samples `ps` every 2 seconds while open and every 5 seconds otherwise, and it never calls the Orca app.
+
+<br clear="right">
+
+### Also included
+
+- **Create worktree** dialog, with a local and remote branch picker and `orca.yaml` setup scripts.
+- **Remove worktree** dialog, with archive handling.
+- Orca-style tabs.
+
 ## Requirements
 
 - **macOS** with **Herdr.app** installed and opened once, so `~/.config/herdr-app` exists. `herdr-app` and `hc` come with it.
