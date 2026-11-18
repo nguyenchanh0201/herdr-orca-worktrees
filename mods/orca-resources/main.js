@@ -24,6 +24,13 @@ import {
 } from "./tree.js";
 import { placeOf } from "./place.js";
 
+const METADATA_RETRY_MS = 5000;
+const TERMINAL_LOOKUP_WORKERS = 4;
+
+function terminalLabels(labels) {
+  return labels && typeof labels === "object" && !Array.isArray(labels) ? labels : null;
+}
+
 function baseName(p) {
   if (!p) return "";
   const trimmed = String(p).replace(/[/\\]+$/, "");
@@ -114,58 +121,79 @@ export default class OrcaResources extends View {
     if (Date.now() - this.lastSampleAt >= interval) this.sample(cx);
   }
 
-  async resolveRepo(place) {
+  async resolveRepo(place, now) {
     if (!place) return { key: "", name: "" };
-    if (this.repoCache.has(place)) return this.repoCache.get(place);
-    let result = { key: place, name: baseName(place) || place };
+    const fallback = { key: place, name: baseName(place) || place };
+    const cached = this.repoCache.get(place);
+    if (cached?.freshAt != null || now < cached?.retryAt) return cached.result ?? fallback;
+
     try {
       const res = await exec(config.node, [config.cli, "info", place], { timeout: 10000 });
-      const parsed = JSON.parse((res.stdout || "").trim() || "{}");
-      if (parsed && typeof parsed.primary === "string" && parsed.primary && !parsed.error) {
-        result = { key: parsed.primary, name: baseName(parsed.primary) || parsed.primary };
+      if (res.code === 0) {
+        const parsed = JSON.parse(res.stdout);
+        if (typeof parsed?.primary === "string" && parsed.primary && !parsed.error) {
+          const result = { key: parsed.primary, name: baseName(parsed.primary) || parsed.primary };
+          this.repoCache.set(place, { result, freshAt: Date.now(), retryAt: 0 });
+          return result;
+        }
+        if (parsed?.error === "not a git repository" && !cached?.result) {
+          this.repoCache.set(place, { result: null, freshAt: Date.now(), retryAt: 0 });
+          return fallback;
+        }
       }
     } catch {}
-    this.repoCache.set(place, result);
-    return result;
+    const result = cached?.result ?? null;
+    this.repoCache.set(place, { result, freshAt: null, retryAt: Date.now() + METADATA_RETRY_MS });
+    return result ?? fallback;
   }
 
-  async resolveTerminalMeta(entry, herdrTerms) {
-    const addr = entry.address;
-    const fromHerdr = herdrTerms.find((x) => x.address === addr);
-    const hasLabels = entry.labels && typeof entry.labels === "object";
-    const directPid = entry.pid ?? fromHerdr?.pid ?? null;
-
-    if (hasLabels && directPid != null) {
-      return {
-        pid: directPid,
-        spaceId: entry.labels["herdr.space"] ?? null,
-        tabId: entry.labels["herdr.tab"] ?? null,
-      };
+  async resolveTerminalMeta(entry, herdrByAddress, now) {
+    const address = entry.address;
+    const host = herdrByAddress.get(address);
+    const currentPid = entry.pid ?? host?.pid ?? null;
+    const currentLabels = terminalLabels(entry.labels) ?? terminalLabels(host?.labels);
+    let cached = this.termCache.get(address);
+    if (currentPid != null && cached?.pid != null && currentPid !== cached.pid) {
+      cached = undefined;
     }
 
-    if (this.termCache.has(addr)) {
-      const cached = this.termCache.get(addr);
-      return {
-        pid: directPid ?? cached.pid,
-        spaceId: hasLabels ? (entry.labels["herdr.space"] ?? null) : cached.spaceId,
-        tabId: hasLabels ? (entry.labels["herdr.tab"] ?? null) : cached.tabId,
-      };
+    let pid = currentPid ?? cached?.pid ?? null;
+    let labels = currentLabels ?? cached?.labels ?? null;
+    let retryAt = cached?.retryAt ?? 0;
+    if ((pid == null || labels == null) && now >= retryAt) {
+      try {
+        const res = await exec("hc", ["get", address, "--json"], { timeout: 5000 });
+        if (res.code === 0) {
+          const info = JSON.parse(res.stdout);
+          const fetchedPid = info?.pid ?? null;
+          if (currentPid == null || fetchedPid == null || currentPid === fetchedPid) {
+            if (pid != null && fetchedPid != null && pid !== fetchedPid) labels = currentLabels;
+            pid = currentPid ?? fetchedPid ?? pid;
+            labels ??= terminalLabels(info?.labels);
+          }
+        }
+      } catch {}
+      retryAt = Date.now() + METADATA_RETRY_MS;
     }
+    this.termCache.set(address, { pid, labels, retryAt: pid != null && labels != null ? 0 : retryAt });
+    return {
+      pid,
+      spaceId: labels?.["herdr.space"] ?? null,
+      tabId: labels?.["herdr.tab"] ?? null,
+    };
+  }
 
-    let meta = { pid: directPid, spaceId: null, tabId: null };
-    try {
-      const res = await exec("hc", ["get", addr, "--json"], { timeout: 5000 });
-      if (res.code === 0 && res.stdout) {
-        const info = JSON.parse(res.stdout);
-        meta = {
-          pid: directPid ?? info.pid ?? null,
-          spaceId: info.labels?.["herdr.space"] ?? null,
-          tabId: info.labels?.["herdr.tab"] ?? null,
-        };
+  async resolveTerminalMetas(entries, herdrByAddress, now) {
+    const metas = new Array(entries.length);
+    let next = 0;
+    const worker = async () => {
+      while (!this.destroyed && next < entries.length) {
+        const index = next++;
+        metas[index] = await this.resolveTerminalMeta(entries[index], herdrByAddress, now);
       }
-    } catch {}
-    this.termCache.set(addr, meta);
-    return meta;
+    };
+    await Promise.all(Array.from({ length: Math.min(entries.length, TERMINAL_LOOKUP_WORKERS) }, worker));
+    return metas;
   }
 
   async collectProcesses() {
@@ -223,14 +251,18 @@ export default class OrcaResources extends View {
           (e) => e && e.state === "live" && typeof e.address === "string" && !e.address.includes("/"),
         );
 
+        const addresses = new Set(liveEntries.map((entry) => entry.address));
+        for (const address of this.termCache.keys()) {
+          if (!addresses.has(address)) this.termCache.delete(address);
+        }
+
         const sps = spaces();
         const psList = panes();
         const herdrTerms = typeof terminals === "function" ? terminals() : [];
+        const herdrByAddress = new Map(herdrTerms.map((terminal) => [terminal.address, terminal]));
         const spaceById = new Map(sps.map((s) => [s.id, s]));
-
-        const metas = await Promise.all(
-          liveEntries.map((e) => this.resolveTerminalMeta(e, herdrTerms)),
-        );
+        const metadataAt = Date.now();
+        const metas = await this.resolveTerminalMetas(liveEntries, herdrByAddress, metadataAt);
         if (this.destroyed) return;
 
         const termRows = [];
@@ -261,7 +293,10 @@ export default class OrcaResources extends View {
           });
         }
 
-        await Promise.all(Array.from(places).map((p) => this.resolveRepo(p)));
+        for (const place of this.repoCache.keys()) {
+          if (!places.has(place)) this.repoCache.delete(place);
+        }
+        await Promise.all(Array.from(places, (place) => this.resolveRepo(place, metadataAt)));
         if (this.destroyed) return;
 
         const totals = subtreeTotals(procs, roots);
@@ -277,7 +312,7 @@ export default class OrcaResources extends View {
           totals,
           herdr,
           placeOf: (sp) => placeOf(sp, psList),
-          repoOf: (place) => this.repoCache.get(place) ?? { key: place, name: baseName(place) || place },
+          repoOf: (place) => this.repoCache.get(place)?.result,
           now,
         });
 
