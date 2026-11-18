@@ -91,6 +91,7 @@ async function chipHarness(execStub, opts = {}) {
       state.execs.push({ cmd, argv: argv ?? [], options });
       return execStub(cmd, argv ?? [], options);
     },
+    watchFolder: opts.watchFolder,
     window: state.window,
     Date: { now: () => state.now },
   };
@@ -418,6 +419,148 @@ for (const destroy of [false, true]) {
     }
   });
 }
+
+function watchFixture() {
+  const calls = [];
+  return {
+    calls,
+    watchFolder(path) {
+      let resolve;
+      let reject;
+      const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+      const call = { path, resolve, reject, canceled: false };
+      // Allow a batch queued before cancellation to finish afterward.
+      promise.cancel = () => { call.canceled = true; };
+      calls.push(call);
+      return promise;
+    },
+  };
+}
+
+async function watchHarness(places, watches, info) {
+  const spaces = places.map((folder, index) => ({ id: String(index), folder, tabs: [] }));
+  const live = {
+    listing: terminalListing(spaces.map(({ id }) => ({
+      address: id, pid: 6, labels: { 'herdr.space': id },
+    }))),
+    processResult: ok(VALID_PS),
+  };
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'ps') return live.processResult;
+    if (argv[0] === 'ls') return live.listing;
+    return info(argv[2]);
+  }, { spaces, watchFolder: watches.watchFolder });
+  await h.flush();
+  return { ...h, live };
+}
+
+test('repo watch bursts rearm without sampling and refresh only their root after 250 ms', async () => {
+  const watches = watchFixture();
+  const root = '/app/.git/worktrees';
+  const h = await watchHarness(['/app', '/linked', '/other'], watches, (place) => (
+    place === '/other'
+      ? ok('{"primary":"/other","gitCommonDir":"/other/.git"}')
+      : ok('{"primary":"/app","gitCommonDir":"/app/.git"}')
+  ));
+  assert.deepEqual(watches.calls.map(({ path }) => path), [root, '/other/.git/worktrees']);
+  const total = h.state.execs.length;
+  h.state.now = 100;
+  watches.calls[0].resolve([root + '/linked/gitdir']);
+  await Promise.resolve();
+  assert.equal(watches.calls[2]?.path, root);
+  h.state.now = 200;
+  watches.calls[2].resolve([root]);
+  await Promise.resolve();
+  assert.equal(watches.calls[3]?.path, root);
+  assert.equal(h.state.execs.length, total);
+  await sampleAt(h, 449);
+  const prefix = 'node cli info ';
+  assert.deepEqual(metadataCommands(h, prefix), [prefix + '/app', prefix + '/linked', prefix + '/other']);
+  await sampleAt(h, 450);
+  assert.deepEqual(metadataCommands(h, prefix), [
+    prefix + '/app', prefix + '/app', prefix + '/linked', prefix + '/linked', prefix + '/other',
+  ]);
+  watches.calls[3].resolve(['/app/.git/refs/heads/main', root + '/linked/index.lock']);
+  await Promise.resolve();
+  await sampleAt(h, 1000);
+  assert.equal(metadataCommands(h, prefix).length, 5);
+  await sampleAt(h, 61000);
+  assert.equal(metadataCommands(h, prefix).length, 5);
+
+  h.live.listing = terminalListing([{ address: '2', pid: 6, labels: { 'herdr.space': '2' } }]);
+  await sampleAt(h, 62000);
+  assert.equal(watches.calls[4]?.canceled, true);
+  assert.equal(watches.calls[1].canceled, false);
+});
+
+test('revalidates older CLI metadata and retries rejected or empty repo watches after 60 seconds', async () => {
+  const watches = watchFixture();
+  const h = await watchHarness(['/missing', '/empty', '/older'], watches, (place) => (
+    ok(JSON.stringify({ primary: place, gitCommonDir: place === '/older' ? undefined : place + '/.git' }))
+  ));
+  assert.deepEqual(watches.calls.map(({ path }) => path), ['/missing/.git/worktrees', '/empty/.git/worktrees']);
+  watches.calls[0].reject(new Error('directory does not exist'));
+  watches.calls[1].resolve([]);
+  await Promise.resolve();
+  await sampleAt(h, 59999);
+  assert.equal(watches.calls.length, 2);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 3);
+  await sampleAt(h, 60000);
+  assert.deepEqual(watches.calls.map(({ path }) => path), [
+    '/missing/.git/worktrees', '/empty/.git/worktrees', '/missing/.git/worktrees', '/empty/.git/worktrees',
+  ]);
+  assert.deepEqual(metadataCommands(h, 'node cli info '), [
+    'node cli info /empty', 'node cli info /empty', 'node cli info /missing',
+    'node cli info /missing', 'node cli info /older', 'node cli info /older',
+  ]);
+});
+
+test('cancels obsolete repo watches and ignores late batches after cancellation and destroy', async () => {
+  const watches = watchFixture();
+  const root = '/app/.git/worktrees';
+  const h = await watchHarness(['/app'], watches, () => ok('{"primary":"/app","gitCommonDir":"/app/.git"}'));
+  assert.equal(watches.calls[0]?.path, root);
+  const listing = h.live.listing;
+  h.live.listing = terminalListing([]);
+  h.live.processResult = { code: 1, stderr: 'temporarily unavailable' };
+  await sampleAt(h, 100);
+  assert.equal(watches.calls[0].canceled, true);
+  h.live.listing = listing;
+  h.live.processResult = ok(VALID_PS);
+  await sampleAt(h, 200);
+  assert.equal(watches.calls[1]?.path, root);
+  watches.calls[0].resolve([root]);
+  await Promise.resolve();
+  await sampleAt(h, 500);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 2);
+  h.view.destroy();
+  assert.equal(watches.calls[1].canceled, true);
+  watches.calls[1].resolve([root]);
+  await Promise.resolve();
+  assert.equal(watches.calls.length, 2);
+});
+
+test('keeps repo watch invalidations that arrive during a lookup', async () => {
+  const watches = watchFixture();
+  const root = '/app/.git/worktrees';
+  const delayed = deferred();
+  const result = ok('{"primary":"/app","gitCommonDir":"/app/.git"}');
+  let count = 0;
+  const h = await watchHarness(['/app'], watches, () => (++count === 2 ? delayed.promise : result));
+  assert.equal(watches.calls[0]?.path, root);
+  watches.calls[0].resolve([root]);
+  await Promise.resolve();
+  const sampling = sampleAt(h, 250);
+  await new Promise(setImmediate);
+  assert.equal(count, 2);
+  watches.calls[1].resolve([root]);
+  await Promise.resolve();
+  h.state.now = 750;
+  delayed.resolve(result);
+  await sampling;
+  await sampleAt(h, 751);
+  assert.equal(count, 3);
+});
 
 test('looks up each distinct active place once and retries folder grouping after five seconds', async () => {
   let scratch = { code: 1, stdout: '{"error":"unavailable"}' };
