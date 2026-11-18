@@ -51,7 +51,15 @@ for m in "${MODS[@]}"; do
     rm -f "$dest"
   fi
   if [[ -d "$dest" ]]; then
-    rsync -aL --delete "$src/" "$dest/"
+    copy_args=(-aL --delete)
+    if [[ $FULL -eq 0 ]]; then
+      # Older companion panels still use these paths until they are reinstalled.
+      case "$m" in
+        orca-usage) copy_args+=(--filter='protect /refresh.svg') ;;
+        orca-resources) copy_args+=(--filter='protect /chip.svg') ;;
+      esac
+    fi
+    rsync "${copy_args[@]}" "$src/" "$dest/"
   else
     # Herdr docks a new mod folder the moment it appears; a half-copied one
     # (main.js before mod.json) gets the default right dock. Move it in whole.
