@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify macOS ARM64
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Test JavaScript
+        run: |
+          npm ci
+          npm test
+
+      - name: Install Rust
+        env:
+          RUST_VERSION: 1.99.1
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$RUST_VERSION" >> "$GITHUB_ENV"
+
+      - name: Test and build Rust
+        run: |
+          test "$(uname -m)" = arm64
+          # Some tests change process-wide environment variables.
+          cargo test --locked --manifest-path rust/Cargo.toml -- --test-threads=1
+          cargo build --release --locked --manifest-path rust/Cargo.toml
+
+      - name: Install pinned Herdr checker
+        env:
+          HERDR_VERSION: 0.1.16
+          HERDR_SHA256: 99000875ead9333a33f5cb60274ccd9cf9d3e47360f03613a467295105c71c04
+        run: |
+          herdr_dir="$RUNNER_TEMP/herdr"
+          mkdir -p "$herdr_dir/bin"
+          curl --fail --silent --show-error --location --retry 3 --max-time 120 \
+            "https://releases.herdr.dev/app/$HERDR_VERSION/herdr-app-macos-aarch64.tar.gz" \
+            -o "$herdr_dir/herdr.tar.gz"
+          printf '%s  %s\n' "$HERDR_SHA256" "$herdr_dir/herdr.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$herdr_dir/herdr.tar.gz" -C "$herdr_dir"
+          ln -s "$herdr_dir/Herdr.app/Contents/MacOS/Herdr" "$herdr_dir/bin/herdr-app"
+          echo "$herdr_dir/bin" >> "$GITHUB_PATH"
+
+      - name: Package and smoke-test the release artifact
+        run: |
+          release_dir="$RUNNER_TEMP/release"
+          mkdir -p "$release_dir"
+          tar -C rust/target/release -czf "$release_dir/orca-wt-darwin-arm64.tar.gz" orca-wt
+          (
+            cd "$release_dir"
+            shasum -a 256 orca-wt-darwin-arm64.tar.gz > orca-wt-darwin-arm64.tar.gz.sha256
+          )
+          bash scripts/ci-smoke.sh "$release_dir/orca-wt-darwin-arm64.tar.gz"
+
+      - name: Store tested release assets
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: orca-wt-darwin-arm64
+          path: |
+            ${{ runner.temp }}/release/orca-wt-darwin-arm64.tar.gz
+            ${{ runner.temp }}/release/orca-wt-darwin-arm64.tar.gz.sha256
+          if-no-files-found: error
+          overwrite: true
