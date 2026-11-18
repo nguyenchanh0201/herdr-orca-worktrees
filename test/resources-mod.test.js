@@ -212,6 +212,212 @@ function deferred() {
   return { promise, resolve };
 }
 
+function terminalListing(entries) {
+  return ok(JSON.stringify({ terminals: entries.map((entry) => ({ state: 'live', ...entry })) }));
+}
+
+function metadataCommands(h, prefix) {
+  return sampleCommands(h).filter((command) => command.startsWith(prefix));
+}
+
+async function sampleAt(h, now) {
+  h.state.now = now;
+  h.view.sample(h.cx);
+  await h.flush();
+  return h.state.shared.get('orca.resources');
+}
+
+test('uses current listing and host metadata, then reuses it when fields disappear', async () => {
+  let entries = [
+    { address: 't1', pid: 6 },
+    { address: 't2', labels: {} },
+  ];
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'ps') return ok(VALID_PS);
+    if (argv[0] === 'ls') return terminalListing(entries);
+    if (cmd === 'node') return ok('{"primary":"/repos/app"}');
+    return { code: 1, stdout: '' };
+  }, {
+    terminals: [
+      { address: 't1', pid: 8, labels: { 'herdr.space': 's1', 'herdr.tab': 'a' } },
+      { address: 't2', pid: 7, labels: { 'herdr.space': 's1' } },
+    ],
+    spaces: [{ id: 's1', folder: '/repos/app', tabs: [{ id: 'a', name: 'Editor' }, { id: 'b', name: 'Shell' }] }],
+  });
+
+  await h.flush();
+  const initial = h.state.shared.get('orca.resources');
+  assert.equal(initial?.projects[0]?.worktrees[0]?.terminals[0]?.label, 'Editor');
+  assert.equal(initial.projects[0].worktrees[0].terminals[0].pid, 6);
+  assert.equal(initial.other[0].pid, 7);
+
+  h.state.terminals = [];
+  entries = [{ address: 't1', labels: { 'herdr.space': 's1', 'herdr.tab': 'b' } }, { address: 't2' }];
+  const changed = await sampleAt(h, 1000);
+  assert.equal(changed.projects[0].worktrees[0].terminals[0].label, 'Shell');
+  assert.equal(changed.other[0].pid, 7);
+
+  entries = [{ address: 't1' }, { address: 't2' }];
+  const reused = await sampleAt(h, 2000);
+  assert.equal(reused.projects[0].worktrees[0].terminals[0].label, 'Shell');
+  assert.equal(reused.other[0].pid, 7);
+  assert.deepEqual(metadataCommands(h, 'hc get '), []);
+});
+
+test('replaces terminal metadata when a live address reports a new PID', async () => {
+  let entries = [{ address: 't1' }];
+  let detail = { pid: 6, labels: { 'herdr.space': 's1' } };
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'ps') return ok(VALID_PS);
+    if (argv[0] === 'ls') return terminalListing(entries);
+    if (cmd === 'node') return ok('{"primary":"/app"}');
+    return ok(JSON.stringify(detail));
+  }, { spaces: [{ id: 's1', folder: '/app', tabs: [] }] });
+
+  await h.flush();
+  assert.equal(h.state.shared.get('orca.resources')?.count, 1);
+  entries = [{ address: 't1', pid: 7 }];
+  detail = { pid: 7, labels: {} };
+  const changed = await sampleAt(h, 1000);
+  assert.equal(changed.count, 0);
+  assert.equal(changed.other[0].pid, 7);
+
+  entries = [{ address: 't1' }];
+  const reused = await sampleAt(h, 2000);
+  assert.equal(reused.other[0].pid, 7);
+  assert.deepEqual(metadataCommands(h, 'hc get '), ['hc get t1 --json', 'hc get t1 --json']);
+});
+
+test('evicts absent terminals and repo places after a valid listing', async () => {
+  const space = { id: 's1', folder: '/checkout', tabs: [] };
+  let listing = terminalListing([{ address: 't1' }]);
+  let pid = 6;
+  let primary = '/old';
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'ps') return ok(VALID_PS);
+    if (argv[0] === 'ls') return listing;
+    if (cmd === 'node') return ok(JSON.stringify({ primary }));
+    return ok(JSON.stringify({ pid, labels: { 'herdr.space': 's1' } }));
+  }, { spaces: [space] });
+
+  await h.flush();
+  const initial = h.state.shared.get('orca.resources');
+  assert.equal(initial?.projects[0]?.key, '/old');
+
+  listing = ok('{}');
+  assert.equal(await sampleAt(h, 1000), initial);
+  listing = terminalListing([{ address: 't1' }]);
+  assert.equal((await sampleAt(h, 2000)).projects[0].key, '/old');
+  assert.equal(metadataCommands(h, 'hc get ').length, 1);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 1);
+
+  listing = terminalListing([]);
+  assert.equal((await sampleAt(h, 3000)).count, 0);
+  listing = terminalListing([{ address: 't1' }]);
+  pid = 7;
+  primary = '/new';
+  const next = await sampleAt(h, 4000);
+  assert.equal(next.projects[0].key, '/new');
+  assert.equal(next.projects[0].worktrees[0].terminals[0].pid, 7);
+  assert.equal(metadataCommands(h, 'hc get ').length, 2);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 2);
+});
+
+for (const [name, failed] of [
+  ['failed', { code: 1, stdout: '' }],
+  ['incomplete', ok('{"labels":{}}')],
+]) {
+  test(`retries a ${name} terminal lookup when the five-second delay expires`, async () => {
+    let detail = failed;
+    const h = await chipHarness((cmd, argv) => {
+      if (cmd === 'ps') return ok(VALID_PS);
+      if (argv[0] === 'ls') return terminalListing([{ address: 't1' }]);
+      return detail;
+    });
+
+    await h.flush();
+    assert.equal(h.state.shared.get('orca.resources')?.other[0]?.pid, null);
+    detail = ok('{"pid":6,"labels":{}}');
+    assert.equal((await sampleAt(h, 4999)).other[0].pid, null);
+    assert.equal(metadataCommands(h, 'hc get ').length, 1);
+    assert.equal((await sampleAt(h, 5000)).other[0].pid, 6);
+    await sampleAt(h, 10000);
+    assert.equal(metadataCommands(h, 'hc get ').length, 2);
+  });
+}
+
+for (const destroy of [false, true]) {
+  test(destroy ? 'teardown stops the terminal lookup queue' : 'caps terminal lookup concurrency at four and keeps listing order', async () => {
+    const entries = Array.from({ length: 6 }, (_, i) => ({ address: `t${i + 1}` }));
+    const results = entries.map(() => deferred());
+    let active = 0;
+    let peak = 0;
+    const h = await chipHarness((cmd, argv) => {
+      if (cmd === 'ps') return ok(VALID_PS);
+      if (argv[0] === 'ls') return terminalListing(entries);
+      active++;
+      peak = Math.max(active, peak);
+      const index = Number(argv[1].slice(1)) - 1;
+      return results[index].promise.then(() => {
+        active--;
+        return ok(JSON.stringify({ pid: index + 6, labels: {} }));
+      });
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    const initial = metadataCommands(h, 'hc get ').length;
+    if (destroy) h.view.destroy();
+    for (const i of [3, 2, 5, 4, 1, 0]) {
+      results[i].resolve();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await h.flush();
+
+    assert.equal(initial, 4);
+    assert.equal(peak, 4);
+    assert.equal(metadataCommands(h, 'hc get ').length, destroy ? 4 : 6);
+    const snap = h.state.shared.get('orca.resources');
+    if (destroy) {
+      assert.equal(snap, undefined);
+    } else {
+      assert.deepEqual(Array.from(snap.other, ({ address }) => address), ['t1', 't2', 't3', 't4', 't5', 't6']);
+    }
+  });
+}
+
+test('looks up each distinct active place once and retries folder grouping after five seconds', async () => {
+  let scratch = { code: 1, stdout: '{"error":"unavailable"}' };
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'ps') return ok(VALID_PS);
+    if (argv[0] === 'ls') {
+      return terminalListing([
+        { address: 't1', pid: 6, labels: { 'herdr.space': 's1' } },
+        { address: 't2', pid: 7, labels: { 'herdr.space': 's2' } },
+        { address: 't3', pid: 8, labels: { 'herdr.space': 's3' } },
+      ]);
+    }
+    return argv[2] === '/checkout' ? ok('{"primary":"/repos/app"}') : scratch;
+  }, {
+    spaces: [
+      { id: 's1', folder: '/checkout', tabs: [] },
+      { id: 's2', folder: '/checkout', tabs: [] },
+      { id: 's3', folder: '/scratch', tabs: [] },
+    ],
+  });
+
+  await h.flush();
+  const initial = h.state.shared.get('orca.resources');
+  assert.deepEqual(Array.from(initial.projects, ({ key }) => key), ['/repos/app', '/scratch']);
+  assert.equal(initial.projects[0].worktrees[0].terminals.length, 2);
+  scratch = ok('{"primary":"/repos/scratch"}');
+  assert.equal((await sampleAt(h, 4999)).projects[1].key, '/scratch');
+  assert.deepEqual(metadataCommands(h, 'node cli info '), ['node cli info /checkout', 'node cli info /scratch']);
+  assert.equal((await sampleAt(h, 5000)).projects[1].key, '/repos/scratch');
+  assert.deepEqual(metadataCommands(h, 'node cli info '), [
+    'node cli info /checkout', 'node cli info /scratch', 'node cli info /scratch',
+  ]);
+});
+
 function processScans(h) {
   return h.state.execs.filter((e) => e.cmd === 'ps' && e.argv[1] === COMBINED_PS).length;
 }
@@ -395,7 +601,7 @@ test('non-repo place becomes its own project', async () => {
       return { code: 0, stdout: JSON.stringify({ pid: 100, labels: { 'herdr.space': 's1' } }), stderr: '' };
     }
     if (cmd === 'node' && argv[1] === 'info') {
-      return { code: 1, stdout: JSON.stringify({ error: 'not a git repository' }), stderr: '' };
+      return ok('{"error":"not a git repository"}');
     }
     return { code: 0, stdout: '', stderr: '' };
   }, { spaces: [{ id: 's1', name: 'scratch-dir', folder: '/tmp/scratch-dir', machine: null, tabs: [] }] });
@@ -404,6 +610,8 @@ test('non-repo place becomes its own project', async () => {
   const snap = h.state.shared.get('orca.resources');
   assert.equal(snap.projects.length, 1);
   assert.equal(snap.projects[0].name, 'scratch-dir');
+  assert.equal((await sampleAt(h, 5000)).projects[0].name, 'scratch-dir');
+  assert.equal(metadataCommands(h, 'node cli info ').length, 1);
 });
 
 test('chip text and click', async () => {
