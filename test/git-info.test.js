@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
+const path = require("node:path");
 
 const { makeRepo } = require("./helpers/repo");
 const { gitInfo, claimFresh } = require("../src/git-info");
@@ -26,6 +27,12 @@ test("gitInfo", () => {
   assert.deepEqual({ w, p, linked }, { w: worktree, p: primary, linked: true });
   assert.equal(gitInfo(primary).linked, false);
   assert.equal(gitInfo(fs.realpathSync(os.tmpdir())), null);
+});
+
+test("gitInfo shares the canonical Git common directory across worktrees", () => {
+  const expected = path.join(primary, ".git");
+  assert.equal(gitInfo(primary).gitCommonDir, expected);
+  assert.equal(gitInfo(worktree).gitCommonDir, expected);
 });
 
 test("claimFresh once, then never", () => {
