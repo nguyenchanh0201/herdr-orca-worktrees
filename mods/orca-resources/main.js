@@ -519,7 +519,7 @@ export default class OrcaResources extends View {
           props: { height },
         });
       })
-      .child(svg("mods/orca-resources/chip.svg").size(13).flex_none().text_color(t.muted))
+      .child(svg("orca-icons/chip.svg").size(13).flex_none().text_color(t.muted))
       .child(div().flex_none().child(memText))
       .child(div().flex_none().text_color(t.dim).child("·"))
       .child(div().flex_none().text_color(t.dim).child(">_"))

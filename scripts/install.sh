@@ -27,7 +27,10 @@ if [[ ! -d "$REPO/node_modules/yaml" ]]; then
   (cd "$REPO" && npm install --omit=dev --no-audit --no-fund >/dev/null)
 fi
 
-mkdir -p "$HERDR_APP_HOME/mods" "$HERDR_APP_HOME/layouts"
+mkdir -p "$HERDR_APP_HOME/mods" "$HERDR_APP_HOME/layouts" "$HERDR_APP_HOME/orca-icons"
+
+# The mods' own icons live outside any mod (svg("orca-icons/<name>.svg")), so they install first.
+rsync -a --delete "$REPO/assets/icons/" "$HERDR_APP_HOME/orca-icons/"
 
 for m in "${MODS[@]}"; do
   src="$REPO/mods/$m"
@@ -42,17 +45,26 @@ for m in "${MODS[@]}"; do
     fs.writeFileSync(out, `export default ${JSON.stringify({ node, cli })};\n`);
   ' "$src/config.js" "$NODE_BIN" "$CLI_PATH"
 
+  # -L: a mod's `ui` is a symlink to the shared ui/ (a mod can't import outside its own folder), so copy its files.
   dest="$HERDR_APP_HOME/mods/$m"
   if [[ -L "$dest" ]]; then
     rm -f "$dest"
   fi
   if [[ -d "$dest" ]]; then
-    rsync -a --delete "$src/" "$dest/"
+    copy_args=(-aL --delete)
+    if [[ $FULL -eq 0 ]]; then
+      # Older companion panels still use these paths until they are reinstalled.
+      case "$m" in
+        orca-usage) copy_args+=(--filter='protect /refresh.svg') ;;
+        orca-resources) copy_args+=(--filter='protect /chip.svg') ;;
+      esac
+    fi
+    rsync "${copy_args[@]}" "$src/" "$dest/"
   else
     # Herdr docks a new mod folder the moment it appears; a half-copied one
     # (main.js before mod.json) gets the default right dock. Move it in whole.
     tmp="$(mktemp -d "$HERDR_APP_HOME/.install-XXXXXX")"
-    rsync -a "$src/" "$tmp/"
+    rsync -aL "$src/" "$tmp/"
     mv "$tmp" "$dest"
   fi
   echo "installed mod: $m"

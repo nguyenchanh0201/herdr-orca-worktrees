@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { readModSource } = require('./helpers/modsource');
 
 const COMBINED_PS = 'pid=,ppid=,pcpu=,rss=,comm=';
 
@@ -95,9 +96,7 @@ async function chipHarness(execStub, opts = {}) {
     window: state.window,
     Date: { now: () => state.now },
   };
-  const source = fs.readFileSync(require.resolve('../mods/orca-resources/main.js'), 'utf8')
-    .replace(/^import\b[\s\S]*?;\n/gm, '')
-    .replace('export default class OrcaResources', 'class OrcaResources');
+  const source = readModSource('orca-resources');
   vm.runInNewContext(`${source}\nthis.Mod = OrcaResources;`, context);
   const view = new context.Mod();
   view.init({}, cx);
@@ -1096,9 +1095,7 @@ async function panelHarness(opts = {}) {
     },
     Date,
   };
-  const source = fs.readFileSync(require.resolve('../mods/orca-resources-panel/main.js'), 'utf8')
-    .replace(/^import\b[\s\S]*?;\n/gm, '')
-    .replace('export default class OrcaResourcesPanel', 'class OrcaResourcesPanel');
+  const source = readModSource('orca-resources-panel');
   vm.runInNewContext(`${source}\nthis.Mod = OrcaResourcesPanel;`, context);
   const view = new context.Mod();
   view.init({}, cx);
