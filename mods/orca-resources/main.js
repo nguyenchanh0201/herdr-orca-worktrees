@@ -170,7 +170,10 @@ export default class OrcaResources extends View {
     }
   }
 
-  pruneRepoWatches(activePlaces) {
+  pruneRepoMetadata(activePlaces) {
+    for (const place of this.repoCache.keys()) {
+      if (!activePlaces.has(place)) this.repoCache.delete(place);
+    }
     for (const [path, watch] of this.repoWatches) {
       for (const place of watch.places) {
         if (!activePlaces.has(place)) watch.places.delete(place);
@@ -374,7 +377,7 @@ export default class OrcaResources extends View {
           this.cancelRepoWatches();
         }
         if (processes.status !== "fulfilled") {
-          this.pruneRepoWatches(new Set(this.terminalPlaces.values()));
+          this.pruneRepoMetadata(new Set(this.terminalPlaces.values()));
           return;
         }
         const { procs, commands } = processes.value;
@@ -420,10 +423,7 @@ export default class OrcaResources extends View {
           });
         }
 
-        for (const place of this.repoCache.keys()) {
-          if (!places.has(place)) this.repoCache.delete(place);
-        }
-        this.pruneRepoWatches(places);
+        this.pruneRepoMetadata(places);
         const repoAt = Date.now();
         // Consume due events before lookups so new batches survive the sample.
         this.invalidateRepoWatches(repoAt);

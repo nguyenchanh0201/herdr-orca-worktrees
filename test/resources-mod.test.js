@@ -586,6 +586,33 @@ test('cancels a departed repo root after a valid partial listing and failed proc
   assert.equal(metadataCommands(h, 'node cli info ').length, 2);
 });
 
+test('revalidates a returned place after a failed scan pruned it from a shared root', async () => {
+  const watches = watchFixture();
+  const root = '/app/.git/worktrees';
+  let linkedPrimary = '/app';
+  const h = await watchHarness(['/app', '/linked'], watches, (place) => (
+    ok(JSON.stringify({
+      primary: place === '/linked' ? linkedPrimary : '/app', gitCommonDir: '/app/.git',
+    }))
+  ));
+  const all = h.live.listing;
+  const initial = await sampleAt(h, 1);
+  assert.equal(initial.projects.length, 1);
+  h.live.listing = terminalListing([{ address: '0', pid: 6, labels: { 'herdr.space': '0' } }]);
+  h.live.processResult = { code: 1, stderr: 'temporarily unavailable' };
+  assert.equal(await sampleAt(h, 100), initial);
+  assert.equal(metadataCommands(h, 'node cli info ').length, 4);
+  assert.equal(watches.calls[0].canceled, false);
+  linkedPrimary = '/moved';
+  watches.calls[0].resolve([root + '/linked/gitdir']);
+  await Promise.resolve();
+
+  h.live.processResult = ok(VALID_PS);
+  h.live.listing = all;
+  const returned = await sampleAt(h, 350);
+  assert.deepEqual(Array.from(returned.projects, ({ key }) => key), ['/app', '/moved']);
+});
+
 test('cancels a departed repo root before unrelated repo lookups finish', async () => {
   const watches = watchFixture();
   const pending = deferred();
