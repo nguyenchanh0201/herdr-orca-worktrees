@@ -337,6 +337,46 @@ test('destroy cancels ticks and discards pending refresh and late collection', a
   assert.equal(h.state.notices, 0);
 });
 
+test('a queued refresh waits for both legacy commands after one rejects', async () => {
+  const legacyStats = deferred();
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'hc') return ok(EMPTY_TERMINALS);
+    if (argv[1] === COMBINED_PS) return { code: 1, stderr: 'ps: comm: keyword not found' };
+    if (argv[1] === LEGACY_PS) return legacyStats.promise;
+    if (argv[1] === LEGACY_COMM) throw new Error('exec failed');
+  });
+
+  h.state.shared.set('orca.resources.refresh', { at: 1000 });
+  h.tickAt(1000);
+  // Allow the rejected command to settle without releasing the stats command.
+  await new Promise((resolve) => setImmediate(resolve));
+  const listingsWhilePending = h.state.execs.filter(({ cmd }) => cmd === 'hc').length;
+  legacyStats.resolve(ok('5 1 1.0 100\n'));
+  await h.flush();
+
+  assert.equal(listingsWhilePending, 1);
+  assert.equal(h.state.execs.filter(({ cmd }) => cmd === 'hc').length, 2);
+  assert.equal(processScans(h), 1);
+});
+
+test('destroy during the combined probe prevents legacy fallback commands', async () => {
+  const scan = deferred();
+  const previous = { rss: 100, count: 0 };
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'hc') return ok(EMPTY_TERMINALS);
+    if (argv[1] === COMBINED_PS) return scan.promise;
+    return ok('5 1 1.0 100\n');
+  }, { shared: [['orca.resources', previous]] });
+
+  h.view.destroy();
+  scan.resolve({ code: 1, stderr: 'ps: comm: keyword not found' });
+  await h.flush();
+
+  assert.deepEqual(sampleCommands(h), ['hc ls --json', 'ps -axo pid=,ppid=,pcpu=,rss=,comm=']);
+  assert.equal(h.state.shared.get('orca.resources'), previous);
+  assert.equal(h.state.notices, 0);
+});
+
 test('checking mode starts no timers or commands', async () => {
   const h = await chipHarness(() => assert.fail('unexpected exec'), { checking: true });
   h.view.render(h.cx);

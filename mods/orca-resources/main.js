@@ -185,13 +185,17 @@ export default class OrcaResources extends View {
       }
     }
 
-    const [psRes, commRes] = await Promise.all([
+    if (this.destroyed) throw new Error("Resource sampler destroyed");
+    const [psResult, commResult] = await Promise.allSettled([
       exec("ps", ["-axo", "pid=,ppid=,pcpu=,rss="], { timeout: 10000 }),
       exec("ps", ["-axo", "pid=,comm="], { timeout: 10000 }),
     ]);
-    if (psRes?.code !== 0 || commRes?.code !== 0) throw new Error("Legacy process scan failed");
-    const procs = parsePs(psRes.stdout);
-    const commands = parseCommands(commRes.stdout);
+    if (psResult.status !== "fulfilled" || commResult.status !== "fulfilled" ||
+        psResult.value?.code !== 0 || commResult.value?.code !== 0) {
+      throw new Error("Legacy process scan failed");
+    }
+    const procs = parsePs(psResult.value.stdout);
+    const commands = parseCommands(commResult.value.stdout);
     if (!procs.size || !commands.size) throw new Error("Unusable legacy process scan");
     this.processFormat = "legacy";
     return { procs, commands };
