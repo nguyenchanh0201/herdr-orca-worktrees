@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
+const COMBINED_PS = 'pid=,ppid=,pcpu=,rss=,comm=';
+
 function element(kind, path) {
   const node = { kind, path, attrs: {}, kids: [] };
   const proxy = new Proxy(node, {
@@ -116,11 +118,8 @@ test('placeOf copies agree on all cases', async () => {
 
 test('sample publishes a snapshot', async () => {
   const h = await chipHarness((cmd, argv) => {
-    if (cmd === 'ps' && argv[1] === 'pid=,ppid=,pcpu=,rss=') {
-      return { code: 0, stdout: ' 100 1 1.5 1000\n 200 1 2.0 2000\n 300 1 0.5 500\n', stderr: '' };
-    }
-    if (cmd === 'ps' && argv[1] === 'pid=,comm=') {
-      return { code: 0, stdout: ' 100 /bin/zsh\n', stderr: '' };
+    if (cmd === 'ps' && argv[1] === COMBINED_PS) {
+      return { code: 0, stdout: ' 100 1 1.5 1000 /bin/zsh\n 200 1 2.0 2000 /bin/zsh\n 300 1 0.5 500 /bin/bash\n 400 1 0.5 100 /x/herdr-core\n', stderr: '' };
     }
     if (cmd === 'hc' && argv[0] === 'ls') {
       return {
@@ -130,6 +129,7 @@ test('sample publishes a snapshot', async () => {
             { address: 't1', agent: 'claude-code', cwd: '/repos/app/wt1', state: 'live', where: 'wt1 / 1' },
             { address: 't2', agent: 'zsh', cwd: '/repos/app/wt1', state: 'live', where: 'wt1 / 2' },
             { address: 't3', agent: 'bash', cwd: '/tmp', state: 'live', where: 'tmp' },
+            { address: 'remote/t4', state: 'live' },
           ],
         }),
         stderr: '',
@@ -157,15 +157,20 @@ test('sample publishes a snapshot', async () => {
   assert.equal(snap.projects[0].name, 'my-app');
   assert.equal(snap.other.length, 1);
   assert.equal(snap.other[0].address, 't3');
+  assert.equal(snap.other[0].rss, 500);
+  assert.equal(snap.herdr.rss, 100);
+  assert.ok(!sampleCommands(h).includes('hc get remote/t4 --json'));
+
+  h.state.execs.length = 0;
+  h.view.sample(h.cx);
+  await h.flush();
+  assert.deepEqual(sampleCommands(h), ['hc ls --json', 'ps -axo pid=,ppid=,pcpu=,rss=,comm=']);
 });
 
 test('pids are looked up once', async () => {
   const h = await chipHarness((cmd, argv) => {
-    if (cmd === 'ps' && argv[1] === 'pid=,ppid=,pcpu=,rss=') {
-      return { code: 0, stdout: ' 100 1 1.0 1000\n', stderr: '' };
-    }
-    if (cmd === 'ps' && argv[1] === 'pid=,comm=') {
-      return { code: 0, stdout: '', stderr: '' };
+    if (cmd === 'ps' && argv[1] === COMBINED_PS) {
+      return { code: 0, stdout: ' 100 1 1.0 1000 /bin/zsh\n', stderr: '' };
     }
     if (cmd === 'hc' && argv[0] === 'ls') {
       return { code: 0, stdout: JSON.stringify({ terminals: [{ address: 't1', agent: 'zsh', cwd: '/r', state: 'live' }] }), stderr: '' };
@@ -190,22 +195,21 @@ test('skips a sample while one is running', async () => {
   let resolvePs;
   const neverPs = new Promise((r) => { resolvePs = r; });
   const h = await chipHarness((cmd, argv) => {
-    if (cmd === 'ps' && argv[1] === 'pid=,ppid=,pcpu=,rss=') return neverPs;
+    if (cmd === 'ps' && argv[1] === COMBINED_PS) return neverPs;
     return { code: 0, stdout: '{}', stderr: '' };
   });
 
   await Promise.resolve();
   h.view.sample(h.cx);
   await Promise.resolve();
-  assert.equal(h.state.execs.filter((e) => e.cmd === 'ps' && e.argv[1] === 'pid=,ppid=,pcpu=,rss=').length, 1);
+  assert.equal(h.state.execs.filter((e) => e.cmd === 'ps' && e.argv[1] === COMBINED_PS).length, 1);
   resolvePs({ code: 0, stdout: '', stderr: '' });
   await h.flush();
 });
 
 test('non-repo place becomes its own project', async () => {
   const h = await chipHarness((cmd, argv) => {
-    if (cmd === 'ps' && argv[1] === 'pid=,ppid=,pcpu=,rss=') return { code: 0, stdout: ' 100 1 1.0 1000\n', stderr: '' };
-    if (cmd === 'ps' && argv[1] === 'pid=,comm=') return { code: 0, stdout: '', stderr: '' };
+    if (cmd === 'ps' && argv[1] === COMBINED_PS) return { code: 0, stdout: ' 100 1 1.0 1000 /bin/zsh\n', stderr: '' };
     if (cmd === 'hc' && argv[0] === 'ls') {
       return { code: 0, stdout: JSON.stringify({ terminals: [{ address: 't1', agent: 'zsh', cwd: '/tmp/scratch-dir', state: 'live' }] }), stderr: '' };
     }
@@ -227,20 +231,19 @@ test('non-repo place becomes its own project', async () => {
 test('chip text and click', async () => {
   // 2.14 GB = 2.14 * 1048576 = 2243953 KB (5 terminals * 448790 = 2243950 -> 2.14 GB)
   const h = await chipHarness((cmd, argv) => {
-    if (cmd === 'ps' && argv[1] === 'pid=,ppid=,pcpu=,rss=') {
+    if (cmd === 'ps' && argv[1] === COMBINED_PS) {
       return {
         code: 0,
         stdout: [
-          ' 101 1 1.0 448790',
-          ' 102 1 1.0 448790',
-          ' 103 1 1.0 448790',
-          ' 104 1 1.0 448790',
-          ' 105 1 1.0 448793',
+          ' 101 1 1.0 448790 /bin/zsh',
+          ' 102 1 1.0 448790 /bin/zsh',
+          ' 103 1 1.0 448790 /bin/zsh',
+          ' 104 1 1.0 448790 /bin/zsh',
+          ' 105 1 1.0 448793 /bin/zsh',
         ].join('\n'),
         stderr: '',
       };
     }
-    if (cmd === 'ps' && argv[1] === 'pid=,comm=') return { code: 0, stdout: '', stderr: '' };
     if (cmd === 'hc' && argv[0] === 'ls') {
       return {
         code: 0,
@@ -271,6 +274,119 @@ test('chip text and click', async () => {
   chipNode.attrs.on_mouse_down[1]({ bounds: { x: 400, y: 800, width: 150, height: 28 } }, h.cx);
   assert.equal(h.state.overlays.length, 1);
   assert.equal(h.state.overlays[0].open.mod, 'orca-resources-panel');
+});
+
+const VALID_PS = '5 1 1.0 100 /x/herdr-core\n';
+const LEGACY_PS = 'pid=,ppid=,pcpu=,rss=';
+const LEGACY_COMM = 'pid=,comm=';
+const EMPTY_TERMINALS = '{"terminals":[]}';
+
+function ok(stdout) {
+  return { code: 0, stdout, stderr: '' };
+}
+
+function sampleCommands(h) {
+  return h.state.execs.map(({ cmd, argv }) => [cmd, ...argv].join(' ')).sort();
+}
+
+for (const [name, combined] of [
+  ['explicitly unsupported', { code: 1, stdout: '', stderr: 'ps: comm: keyword not found' }],
+  ['unusable at startup', ok('5 1 1.0 100\n')],
+]) {
+  test(`uses the legacy scans on later samples if the combined format is ${name}`, async () => {
+    const h = await chipHarness((cmd, argv) => {
+      if (cmd === 'hc') return ok(EMPTY_TERMINALS);
+      if (argv[1] === COMBINED_PS) return combined;
+      if (argv[1] === LEGACY_PS) return ok('5 1 1.0 100\n');
+      if (argv[1] === LEGACY_COMM) return ok('5 /x/herdr-core\n');
+    });
+
+    await h.flush();
+    const initial = h.state.shared.get('orca.resources');
+    assert.equal(initial?.herdr.rss, 100);
+    assert.deepEqual(sampleCommands(h), [
+      'hc ls --json', 'ps -axo pid=,comm=', 'ps -axo pid=,ppid=,pcpu=,rss=',
+      'ps -axo pid=,ppid=,pcpu=,rss=,comm=',
+    ]);
+
+    h.state.execs.length = 0;
+    h.view.sample(h.cx);
+    await h.flush();
+    assert.notEqual(h.state.shared.get('orca.resources'), initial);
+    assert.deepEqual(sampleCommands(h), [
+      'hc ls --json', 'ps -axo pid=,comm=', 'ps -axo pid=,ppid=,pcpu=,rss=',
+    ]);
+  });
+}
+
+test('retries the combined format when an unusable startup scan and its legacy fallback fail', async () => {
+  let startup = true;
+  const h = await chipHarness((cmd, argv) => {
+    if (cmd === 'hc') return ok(EMPTY_TERMINALS);
+    if (argv[1] === COMBINED_PS) return ok(startup ? '' : VALID_PS);
+    if (argv[1] === LEGACY_PS) return ok('5 1 1.0 100\n');
+    if (argv[1] === LEGACY_COMM) return { ...ok('5 /x/herdr-core\n'), code: 1 };
+  });
+
+  await h.flush();
+  assert.equal(h.state.shared.has('orca.resources'), false);
+  startup = false;
+  h.state.execs.length = 0;
+  h.view.sample(h.cx);
+  await h.flush();
+  assert.equal(h.state.shared.get('orca.resources')?.herdr.rss, 100);
+  assert.deepEqual(sampleCommands(h), ['hc ls --json', 'ps -axo pid=,ppid=,pcpu=,rss=,comm=']);
+});
+
+test('retains the snapshot across transient process scan failures and keeps using the combined format', async () => {
+  let processResult = ok(VALID_PS);
+  const h = await chipHarness((cmd) => cmd === 'hc' ? ok(EMPTY_TERMINALS) : processResult);
+
+  await h.flush();
+  const initial = h.state.shared.get('orca.resources');
+  assert.equal(initial?.herdr.rss, 100);
+  for (const failed of [ok('garbled data'), { ...ok(VALID_PS), code: 1, stderr: 'temporarily unavailable' }]) {
+    processResult = failed;
+    h.state.execs.length = 0;
+    h.view.sample(h.cx);
+    await h.flush();
+    assert.equal(h.state.shared.get('orca.resources'), initial);
+    assert.deepEqual(sampleCommands(h), ['hc ls --json', 'ps -axo pid=,ppid=,pcpu=,rss=,comm=']);
+  }
+
+  processResult = ok('5 1 1.0 200 /x/herdr-core\n');
+  h.view.sample(h.cx);
+  await h.flush();
+  const next = h.state.shared.get('orca.resources');
+  assert.equal(next.herdr.rss, 200);
+  assert.deepEqual(Array.from(next.herdrHistory), [100, 200]);
+});
+
+test('retains the snapshot for invalid terminal listings and publishes a valid empty listing', async () => {
+  let terminalResult = ok(JSON.stringify({
+    terminals: [{ address: 't1', state: 'live', pid: 6, labels: {} }],
+  }));
+  const h = await chipHarness((cmd) => cmd === 'hc' ? terminalResult : ok(VALID_PS));
+
+  await h.flush();
+  const initial = h.state.shared.get('orca.resources');
+  assert.equal(initial?.other[0].address, 't1');
+
+  for (const failed of [ok('malformed'), ok('{}'), ok('null'), { ...ok(EMPTY_TERMINALS), code: 1 }]) {
+    terminalResult = failed;
+    h.view.sample(h.cx);
+    await h.flush();
+    assert.equal(h.state.shared.get('orca.resources'), initial);
+  }
+
+  terminalResult = ok(EMPTY_TERMINALS);
+  h.view.sample(h.cx);
+  await h.flush();
+  const next = h.state.shared.get('orca.resources');
+  assert.notEqual(next, initial);
+  assert.equal(next.count, 0);
+  assert.equal(next.other.length, 0);
+  assert.equal(next.herdr.rss, 100);
 });
 
 async function panelHarness(opts = {}) {

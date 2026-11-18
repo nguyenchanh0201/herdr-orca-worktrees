@@ -10,6 +10,32 @@ test("parsePs tolerates spacing and blank lines", async () => {
   assert.deepEqual(p.get(12), { ppid: 11, cpu: 0, rss: 3000 });
 });
 
+test("parseProcessSnapshot keeps the full command paired with its process", async () => {
+  const t = await import('../mods/orca-resources/tree.js');
+  const snapshot = t.parseProcessSnapshot([
+    '   5  1  1.5  100   /Applications/Herdr Core.app/Contents/MacOS/herdr-core  ',
+    ' 6 5 0.0 50 /bin/zsh',
+    'not a process',
+    '7 6 bad 999 /bin/sh',
+    '8 6 1.0 999',
+    '9x 6 1.0 999 /bin/sh',
+  ].join('\r\n'));
+  assert.deepEqual([...snapshot.procs], [
+    [5, { ppid: 1, cpu: 1.5, rss: 100 }],
+    [6, { ppid: 5, cpu: 0, rss: 50 }],
+  ]);
+  assert.deepEqual([...snapshot.commands], [
+    [5, '/Applications/Herdr Core.app/Contents/MacOS/herdr-core'],
+    [6, '/bin/zsh'],
+  ]);
+});
+
+test("parseProcessSnapshot returns null without a usable process row", async () => {
+  const t = await import('../mods/orca-resources/tree.js');
+  assert.equal(t.parseProcessSnapshot('PID PPID %CPU RSS COMM\n1 0 0.0 10\n'), null);
+  assert.equal(t.parseProcessSnapshot(''), null);
+});
+
 test("subtreeTotals sums descendants and counts each pid once", async () => {
   const t = await import('../mods/orca-resources/tree.js');
   const tot = t.subtreeTotals(t.parsePs(PS), [10, 11, 99]);

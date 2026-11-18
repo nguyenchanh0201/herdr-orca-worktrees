@@ -48,6 +48,26 @@ export function parsePs(text) {
   return procs;
 }
 
+/** Parse `ps -axo pid=,ppid=,pcpu=,rss=,comm=` without splitting command paths. */
+export function parseProcessSnapshot(text) {
+  const procs = new Map();
+  const commands = new Map();
+  for (const raw of String(text ?? "").split(/\r?\n/)) {
+    const row = /^(\d+)\s+(\d+)\s+(\d+(?:\.\d+)?)\s+(\d+)\s+(.+)$/.exec(raw.trim());
+    if (!row) continue;
+    const [, pidText, ppidText, cpuText, rssText, command] = row;
+    const pid = Number(pidText);
+    const ppid = Number(ppidText);
+    const cpu = Number(cpuText);
+    const rss = Number(rssText);
+    if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(ppid) ||
+        !Number.isFinite(cpu) || !Number.isSafeInteger(rss)) continue;
+    procs.set(pid, { ppid, cpu, rss });
+    commands.set(pid, command);
+  }
+  return procs.size ? { procs, commands } : null;
+}
+
 /** Sum cpu and rss for each root's subtree, claiming each pid at most once in root order. */
 export function subtreeTotals(procs, roots) {
   const children = buildChildrenMap(procs);
