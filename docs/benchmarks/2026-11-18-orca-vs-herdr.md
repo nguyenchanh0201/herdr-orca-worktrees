@@ -7,6 +7,8 @@ Measured on 2026-11-18 on a MacBook with 8 cores and 16 GB of RAM, running macOS
 - **Orca's own processes use about 2.75× the memory of Herdr's:** about **920 MB** against **333 MB**, with both apps open and idle.
 - **CPU at idle is about the same,** around 5–6% of one core each.
 - **Heavy terminal output costs Herdr about 1.7× Orca's CPU** (≈ 9.9 s against ≈ 5.7 s for 21 MB), because Herdr's terminal service passes output through three processes. The window itself draws as cheaply as Orca's, and our mods add nothing measurable (see below).
+- **Smoothness:** fast output scrolls at about 30 frames a second in Herdr against about 40 in Orca. Both are steady, with no hangs.
+- **Responsiveness:** while output floods in, Herdr's status call slows by about 40 ms, and Orca's by about 190 ms.
 - **An agent costs the same in either app,** because it's the same `claude` program: about 320–360 MB per Claude session.
 - **The app is a small share of the total.** The agents inside the terminals dominate: about 3.5–3.9 GB per app here.
 
@@ -88,6 +90,41 @@ Orca injects its own Claude plugin, `orca-agent-view`, which may explain the ext
 - **Orca's runs varied more** (4.3–7.7 s). The first round was lower, perhaps because Orca was still settling after being brought to the front. The second round (7.3–7.7 s) is closer to Herdr's.
 
 For everyday use this rarely matters: agents print in short bursts, not 21 MB at a time. It would matter for very chatty dev servers or long logs.
+
+## Smoothness and responsiveness
+
+[`smooth.sh`](smooth.sh) runs the same `seq 1 3000000` in a visible terminal, with the app in front.
+- **Frames:** an Instruments **Animation Hitches** recording lasts 12 s. [`frames.js`](frames.js) reads the frame list for the app's own window layers. Those are the layers that jump to full speed when that app's output streams: surfaces 44 and 230 for Herdr, and 102, 103 and 107 for Orca.
+- **Responsiveness:** a status call goes to the app every 0.3 s, while idle and while the output streams. Herdr gets `herdr-app status`; Orca gets `orca status`.
+
+**Frames while the output streams** (seconds 2–7 of the recording):
+
+| | Frames per second | Typical frame time | Slowest frame | Pauses over 50 ms | Longest pause |
+|---|---|---|---|---|---|
+| **Herdr** | **≈ 30** (steady) | 19 ms (p95 24 ms) | 42 ms | 4 | 64 ms |
+| **Orca** | **≈ 38–40** (steady) | 16 ms (p95 16 ms) | 45 ms | 2 | 73 ms |
+
+Neither app had a **hang**: Instruments' "potential hangs" table, which lists main-thread stalls of 250 ms or more, was empty for both.
+
+**Answering a status call:**
+
+| | Idle (median, range) | While streaming (median, range) | Slowdown |
+|---|---|---|---|
+| **Herdr** | **23 ms** (12–31) | **62 ms** (30–126) | +≈ 40 ms |
+| **Orca** | 170 ms (147–208)² | 358 ms (208–1,178) | +≈ 190 ms |
+
+² The `orca` CLI is a Node program, so about 150 ms of every Orca call is Node starting up. Compare each app's slowdown, not the raw numbers.
+
+**What it means:**
+
+- **Fast output scrolls a little smoother in Orca:** about 40 frames a second against Herdr's 30.
+  - Both are steady, with no hangs and pauses under 75 ms.
+  - Herdr appears to cap terminal redraws at 30 frames a second while output floods in. The display can do far more.
+  - At normal agent speeds, both apps simply redraw as text arrives.
+- **Herdr stays more responsive under load.** Its status call slowed by about 40 ms while 21 MB streamed. Orca's slowed by about 190 ms, with one call taking 1.2 s.
+  - Clicks and switching spaces are handled on the same main thread, so Herdr should feel snappier while a terminal is busy.
+  - This measures how fast the app answers, not how fast pixels change after a keystroke.
+- **Typing latency wasn't measured.** Doing it properly needs a high-speed camera or a pixel-diff harness.
 
 ## Limits
 
