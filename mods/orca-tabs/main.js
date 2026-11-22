@@ -1,4 +1,7 @@
 // Copied from Herdr 0.1.16 mods/tabs. Changes: ORCA-TOGGLE and ORCA-GIT blocks. Re-copy on Herdr updates.
+// ORCA-GIT start
+import { nextCommand } from "herdr";
+// ORCA-GIT end
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
@@ -29,11 +32,24 @@ function label(tab, lead) {
 }
 
 export default class Tabs extends View {
-  init() {
+  init(_p, cx) {
     this.pressed = null;
     this.scroll = ScrollHandle.new();
     try { this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}"); } catch { this.panels = {}; }
     if (!this.panels || typeof this.panels !== "object" || Array.isArray(this.panels)) this.panels = {};
+    // ORCA-GIT start
+    for (const id of Object.keys(this.panels)) if (this.panels[id] === "git") this.panels[id] = "changes";
+    cx.spawn(async () => {
+      for (;;) {
+        const command = await nextCommand();
+        if (command === "changes") {
+          run("layout.select", { stack: "panel-body", child: "changes" });
+          run("layout.show", { id: "panel" });
+          run("orca-commits.focus");
+        }
+      }
+    });
+    // ORCA-GIT end
     this.swipe = { acc: 0, steps: 0, at: 0, last: 0 };
   }
 
@@ -132,7 +148,7 @@ export default class Tabs extends View {
     const panel = find(root, "panel"), body = find(root, "panel-body");
     let enabled = shared("workspace.panels") ?? ["files", "changes"];
     // ORCA-GIT start
-    if (body?.children?.some(child => child.id === "git")) enabled = [...enabled, "git"];
+    if (body?.children?.some(child => child.id === "changes" && child.content?.mod === "orca-commits")) enabled = [...new Set([...enabled.filter(id => id !== "git"), "changes"])];
     // ORCA-GIT end
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
@@ -144,7 +160,7 @@ export default class Tabs extends View {
           if (on) run("layout.hide", { id: "panel" });
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
           // ORCA-GIT start
-          if (!on && id === "git") run("orca-commits.focus");
+          if (!on && id === "changes") run("orca-commits.focus");
           // ORCA-GIT end
         }).child(svg(icon).size(14)).child(label);
     };
@@ -177,9 +193,6 @@ export default class Tabs extends View {
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
-      // ORCA-GIT start
-      .when(enabled.includes("git"), el => el.child(panelButton("git", "Git", "mods/changes/changes.svg")))
-      // ORCA-GIT end
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/orca-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/orca-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/orca-tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

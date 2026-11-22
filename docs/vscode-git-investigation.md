@@ -36,3 +36,14 @@ Herdr's native mod checker passed after the final UI changes, and the installed 
 The diff toolbar offers **Open in Neovim** for working-tree selections. This replaces the native text editor and Add diff to chat action. It starts `nvim -- <absolute file path>` with an argv array in a real terminal split beside the current pane, with the selected worktree as its working directory. When no model pane exists it opens a terminal tab. Historical patches remain read-only; staged selections open the current working file without changing the index.
 
 Neovim owns its buffers, keyboard input and saves (`:w`); `:q` exits and closes its terminal pane. The Git panel retains its diff view and refreshes every ten seconds or immediately with `r` / `↻`. Startup and file-validation errors appear in the panel. Selection and worktree changes cancel pending opens. The file validation currently retains the existing restrictions on binary, non-UTF-8, symlink and oversized files.
+
+
+## Consolidated Changes entry
+
+The Orca layout now uses `orca-commits` behind its existing **Changes** entry. The migration replaces only the shipped Changes module, removes the redundant Git entry when it points to our module, and maps an active Git entry to Changes. Custom Changes modules are left intact. The custom module name and saved sizing keys remain stable, preserving existing preferences. Herdr's shipped Changes module remains untouched for other layouts and future updates.
+
+`⌘⇧G` opens and focuses Changes through the always-loaded `orca-tabs.changes` command. Installation adds this binding only in `layout:orca`, preserves explicit existing layout bindings, and backs up changed key/layout files. Per-space panel preferences using `git` migrate to `changes`.
+
+Local file watching refreshes the selected worktree automatically, coalesces events during Git operations, cancels stale watches when changing context, and retains ten-second polling if watching is unavailable. Git reads avoid optional index locks and fsmonitor side effects. File counts distinguish index and working edits, including NUL-delimited rename paths and literal tabs in filenames. Untracked text counts are bounded to regular files up to 400,000 bytes. Diff previews cap rows at 1,500 and line lengths at 4,000; Neovim opens the full working file.
+
+This version explicitly supports local workspaces. Remote contexts are detected before loading or mutating Git and show a limitation instead of using local paths. Commit continues to use the index only; no implicit stage-all behavior is carried over from the shipped Changes panel.

@@ -72,7 +72,7 @@ done
 
 upgrade_git_panel() {
   if [[ -d "$HERDR_APP_HOME/mods/orca-tabs" && -d "$HERDR_APP_HOME/mods/orca-commits" && -f "$HERDR_APP_HOME/layouts/orca.json" ]]; then
-    "$NODE_BIN" "$REPO/scripts/enable-git-panel.js" "$HERDR_APP_HOME/layouts/orca.json"
+    "$NODE_BIN" "$REPO/scripts/enable-git-panel.js" "$HERDR_APP_HOME/layouts/orca.json" "$HERDR_APP_HOME/keys.json"
   fi
 }
 

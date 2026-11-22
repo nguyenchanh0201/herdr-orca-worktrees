@@ -1,6 +1,6 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, v_virtual_list, ScrollHandle, VirtualListScrollHandle, InputState, Input, h_resizable, v_resizable, resizable_panel } from "gpui-base";
-import { theme, closeOverlay, props, checking, exec, focused, spaces, panes, run, nextCommand, shared, setShared } from "herdr";
+import { theme, closeOverlay, props, checking, exec, focused, spaces, panes, run, nextCommand, shared, setShared, watchFolder } from "herdr";
 import config from "./config.js";
 
 const untab = (text) =>
@@ -41,6 +41,8 @@ export default class OrcaCommits extends View {
     this.sourceScrolls = Object.fromEntries(["Merge Changes", "Staged Changes", "Changes"].map(section => [section, ScrollHandle.new()]));
     this.panel = !props()?.overlay;
     this.folder = "";
+    this.watchGeneration = 0;
+    this.refreshPending = false;
     this.mode = props()?.mode || "changes";
     this.status = {};
     this.statusRequest = 0;
@@ -68,6 +70,7 @@ export default class OrcaCommits extends View {
     this.filesLoading = false;
     this.filesError = "";
     this.diffRows = [];
+    this.diffLimited = false;
     this.diffWidth = 0;
     this.diffLoading = false;
     this.diffError = "";
@@ -100,7 +103,11 @@ export default class OrcaCommits extends View {
     const f = focused();
     const pane = f?.pane ? panes().find(p => p.pane === f.pane) : null;
     const folder = props()?.folder || pane?.cwd || space?.folder || f?.cwd || "";
-    if (this.contextSet && folder === this.folder) return;
+    const machine = f?.pane === null && f?.terminal?.includes("/") ? f.terminal.split("/")[0] : space?.machine || null;
+    if (this.contextSet && folder === this.folder && machine === this.machine) return;
+    this.stopWatching();
+    this.machine = machine;
+    this.refreshPending = false;
     this.contextSet = true;
     this.leaveEditor();
     this.editorError = "";
@@ -118,6 +125,7 @@ export default class OrcaCommits extends View {
     this.selectedFile = null;
     this.selectedSection = null;
     this.diffRows = [];
+    this.diffLimited = false;
     this.lane = this.mode === "changes" ? "files" : "commits";
     this.count = "";
     this.lastG = 0;
@@ -125,7 +133,45 @@ export default class OrcaCommits extends View {
     this.load(cx);
   }
 
+  stopWatching() {
+    this.watchGeneration++;
+    this.folderWatch?.cancel();
+    this.folderWatch = null;
+    this.watchedRoot = null;
+  }
+
+  watch(root, cx) {
+    if (!root || this.machine || this.watchedRoot === root) return;
+    this.stopWatching();
+    this.watchedRoot = root;
+    const generation = this.watchGeneration;
+    cx.spawn(async (cx) => {
+      try {
+        while (generation === this.watchGeneration) {
+          this.folderWatch = watchFolder(root);
+          const paths = await this.folderWatch;
+          if (generation !== this.watchGeneration) return;
+          if (!paths.length || paths.every(path => path.startsWith(`${root}/.git/`) || path === `${root}/.git`)) continue;
+          this.refreshPending = true;
+          this.flushRefresh(cx);
+        }
+      } catch {
+        if (generation === this.watchGeneration) this.watchedRoot = null;
+        // The existing ten-second poll remains available when watching fails.
+      }
+    });
+  }
+
+  flushRefresh(cx) {
+    if (!this.refreshPending || this.loading || this.busy) return;
+    this.refreshPending = false;
+    this.load(cx);
+  }
+
+  close() { this.stopWatching(); }
+
   async cli(args) {
+    if (this.machine) throw new Error("Changes currently supports local workspaces only");
     const r = await exec(config.node, [config.cli, ...args]);
     const parsed = JSON.parse((r.stdout || "").trim() || "{}");
     if (r.code !== 0 && !parsed.error) throw new Error((r.stderr || r.stdout || `exit ${r.code}`).trim());
@@ -138,6 +184,12 @@ export default class OrcaCommits extends View {
   }
 
   load(cx) {
+    if (this.machine) {
+      this.error = "Changes currently supports local workspaces only. Remote Git and Neovim are not available in this panel.";
+      this.loading = false;
+      cx.notify();
+      return;
+    }
     if (this.mode === "changes") { this.loadStatus(cx); return; }
     const generation = this.generation;
     const folder = this.folder;
@@ -156,6 +208,7 @@ export default class OrcaCommits extends View {
             this.selectedSection = null;
             this.files = [];
             this.diffRows = [];
+            this.diffLimited = false;
             this.diffRequest++;
           }
         }
@@ -166,6 +219,7 @@ export default class OrcaCommits extends View {
           this.loading = false;
           if (!this.error && this.selected) this.loadFiles(cx);
           cx.notify();
+          this.flushRefresh(cx);
         }
       }
     });
@@ -179,6 +233,7 @@ export default class OrcaCommits extends View {
     this.selectedSection = null;
     this.files = [];
     this.diffRows = [];
+    this.diffLimited = false;
     this.diffError = "";
     this.diffLoading = false;
     this.diffRequest++;
@@ -222,6 +277,7 @@ export default class OrcaCommits extends View {
     this.selectedFile = file?.path ?? null;
     this.selectedGroup = file?.group ?? null;
     this.diffRows = [];
+    this.diffLimited = false;
     this.diffError = "";
     this.diffLoading = false;
     this.diffCursor = 0;
@@ -265,7 +321,9 @@ export default class OrcaCommits extends View {
         if (request !== this.diffRequest) return;
         if (res.error) { this.diffError = res.error; this.diffRows = []; }
         else {
-          this.diffRows = diffRows(res.diff);
+          const rows = diffRows(res.diff);
+          this.diffLimited = rows.length > 1500 || rows.some(row => row.text.length > 4000);
+          this.diffRows = rows.slice(0, 1500).map(row => ({ ...row, text: row.text.length > 4000 ? row.text.slice(0, 4000) + "…" : row.text }));
           this.diffWidth = this.diffRows.reduce((width, row) => Math.max(width, (row.text.length + 1) * 7 + 105), 300);
           this.diffCursor = Math.min(this.diffCursor, Math.max(0, this.diffRows.length - 1));
           if (reset) this.diffScroll.scroll_to_item(0);
@@ -442,7 +500,7 @@ export default class OrcaCommits extends View {
   }
 
   openEditor(cx) {
-    if (this.mode !== "changes" || !this.selectedFile || this.editLoading) return;
+    if (this.machine || this.mode !== "changes" || !this.selectedFile || this.editLoading) return;
     const folder = this.folder;
     const file = this.selectedFile;
     const tab = focused()?.tab;
@@ -479,6 +537,7 @@ export default class OrcaCommits extends View {
       .when(this.mode === "changes", el => el.child(h_flex().h(30).flex_none().px(6).gap(4).items_center().border_b(1).border_color(t.border)
         .child(this.tool("open-in-neovim", this.editLoading ? "Opening…" : "Open in Neovim", cx => this.openEditor(cx), t, Boolean(this.selectedFile) && !this.editLoading))))
       .when(Boolean(this.editorError), el => el.child(div().px(10).py(6).text_color(t.blocked).text_size(11).child(this.editorError)))
+      .when(Boolean(this.diffLimited), el => el.child(div().px(10).py(4).text_size(10).text_color(t.dim).child("Preview limited to 1,500 lines and 4,000 characters per line. Open in Neovim for the full working file.")))
       .child(div().id("diff-pane").flex_1().min_h(0).w_full().relative().font_family("JetBrains Mono").text_size(11)
         .on_mouse_down("left", (_e, cx) => this.focusLane("diff", cx))
         .on_size_change(size => { this.diffHeight = size.height; })
@@ -506,6 +565,7 @@ export default class OrcaCommits extends View {
     this.selectedSection = null;
     this.files = [];
     this.diffRows = [];
+    this.diffLimited = false;
     this.lane = mode === "changes" ? "files" : "commits";
     this.load(cx);
     cx.notify();
@@ -522,11 +582,12 @@ export default class OrcaCommits extends View {
         if (res.error) throw new Error(res.error);
         this.error = "";
         this.status = res;
+        this.watch(res.root, cx);
         this.files = [
-          ...(res.conflicts || []).map(f => ({ ...f, group: "UNSTAGED", section: "Merge Changes" })),
-          ...(res.staged || []).map(f => ({ ...f, group: "STAGED", section: "Staged Changes" })),
-          ...(res.changes || []).map(f => ({ ...f, group: "UNSTAGED", section: "Changes" })),
-          ...(res.untracked || []).map(f => ({ ...f, group: "UNTRACKED", section: "Changes", status: "U" })),
+          ...(res.conflicts || []).map(f => ({ ...f, ...res.stats?.working?.[f.path], group: "UNSTAGED", section: "Merge Changes" })),
+          ...(res.staged || []).map(f => ({ ...f, ...res.stats?.staged?.[f.path], group: "STAGED", section: "Staged Changes" })),
+          ...(res.changes || []).map(f => ({ ...f, ...res.stats?.working?.[f.path], group: "UNSTAGED", section: "Changes" })),
+          ...(res.untracked || []).map(f => ({ ...f, ...res.stats?.untracked?.[f.path], group: "UNTRACKED", section: "Changes", status: "U" })),
         ];
         const selected = this.files.find(f => f.path === this.selectedFile && f.group === this.selectedGroup);
         if (!this.selectedSection || !this.sourceEntries().some(entry => entry.header === this.selectedSection)) {
@@ -536,13 +597,13 @@ export default class OrcaCommits extends View {
       } catch (e) {
         if (request === this.statusRequest) this.error = String(e?.message ?? e);
       } finally {
-        if (request === this.statusRequest) { this.loading = false; cx.notify(); }
+        if (request === this.statusRequest) { this.loading = false; cx.notify(); this.flushRefresh(cx); }
       }
     });
   }
 
   action(command, file, cx, message) {
-    if (this.busy || this.loading || this.error) return;
+    if (this.machine || this.busy || this.loading || this.error) return;
     const generation = this.generation;
     const folder = this.folder;
     this.busy = true;
@@ -598,6 +659,9 @@ export default class OrcaCommits extends View {
       .on_click((_e, cx) => { this.focusLane("files", cx, false); this.selectFile(file, cx); })
       .child(div().text_color(color).child(name))
       .child(div().flex_1().min_w(0).truncate().text_size(10).text_color(t.dim).child(file.oldPath ? `${file.oldPath} → ${parts.join("/")}` : parts.join("/")))
+      .when(file.add > 0, el => el.child(div().text_size(10).text_color(t.ansi2).child(`+${file.add}`)))
+      .when(file.del > 0, el => el.child(div().text_size(10).text_color(t.ansi1).child(`−${file.del}`)))
+      .when(Boolean(file.binary), el => el.child(div().text_size(10).text_color(t.dim).child("Binary")))
       .child(this.tool(`stage-${file.group}-${file.path}`, staged ? "−" : "+", cx => this.action(staged ? "git-unstage" : "git-stage", file, cx), t, enabled))
       .child(div().w(15).text_size(11).text_color(color).child(file.status));
   }
@@ -674,7 +738,10 @@ export default class OrcaCommits extends View {
       .on_size_change((size, cx) => { if (this.height !== size.height) { this.height = size.height; cx.notify(); } })
       .size_full().min_h(0).overflow_hidden().bg(this.panel ? t.background : t.popover).text_color(t.foreground).text_size(12)
       .child(h_flex().h(34).flex_none().px(10).gap(4).items_center().border_b(1).border_color(t.border)
-        .child(div().flex_1().font_semibold().text_size(11).text_color(t.muted).child("SOURCE CONTROL"))
+        .child(div().flex_1().font_semibold().text_size(11).text_color(t.muted).child("CHANGES · ⌘⇧G"))
+        .when(this.mode === "changes", el => el
+          .child(div().text_size(10).text_color(t.ansi2).child(`+${this.files.reduce((n, file) => n + (file.add || 0), 0)}`))
+          .child(div().text_size(10).text_color(t.ansi1).child(`−${this.files.reduce((n, file) => n + (file.del || 0), 0)}`)))
         .child(this.tool("refresh-git", "↻", cx => this.load(cx), t, !this.loading && !this.busy))
         .child(this.tool("close-commits", "×", () => this.dismiss(), t)))
       .child(h_flex().h(30).flex_none().px(6).gap(6).items_center().border_b(1).border_color(t.border)

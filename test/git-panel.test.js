@@ -1,10 +1,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { enableGitPanel } = require("../scripts/enable-git-panel");
+const { enableGitPanel, enableChangesShortcut } = require("../scripts/enable-git-panel");
 const vm = require("node:vm");
 const { readModSource } = require("./helpers/modsource");
 
 function panelHarness(mode = "history", saved = new Map()) {
+  let machine = null;
+  const watches = [];
   let folder = "/first";
   const pending = [];
   const handles = [];
@@ -14,9 +16,17 @@ function panelHarness(mode = "history", saved = new Map()) {
   let pane = "pane1";
   const context = vm.createContext({
     View: class {}, checking: () => false, props: () => ({ mode }),
-    focused: () => ({ cwd: folder, tab, pane }), spaces: () => [{ active: true, folder }], panes: () => [],
+    focused: () => ({ cwd: folder, tab, pane }), spaces: () => [{ active: true, folder, machine }], panes: () => [],
     exec: async () => { if (nvimError) throw new Error(nvimError); return { code: 0 }; },
     nextCommand: () => new Promise(() => {}),
+    watchFolder: root => {
+      let resolve;
+      const promise = new Promise(r => { resolve = r; });
+      const watch = {root, resolve, canceled: false};
+      promise.cancel = () => { watch.canceled = true; resolve([]); };
+      watches.push(watch);
+      return promise;
+    },
     run: (command, args) => commands.push({command, args}),
     shared: key => saved.get(key), setShared: (key, value) => saved.set(key, value),
     InputState: { new: () => { let value = ""; return { on() {}, value: () => value, set_value: next => { value = next; } }; } },
@@ -36,6 +46,7 @@ function panelHarness(mode = "history", saved = new Map()) {
   };
   view.init({}, cx);
   return {
+    watches, setMachine(value) { machine = value; },
     commands, failNvim(error) { nvimError = error; }, setTab(value) { tab = value; }, setPane(value) { pane = value; },
     view, cx, pending, handles, rows: context.diffRows, setFolder(value) { folder = value; },
     async resolve(index, result) { pending[index].resolve(result); await new Promise(setImmediate); },
@@ -160,11 +171,12 @@ test("Git panel migration preserves custom layout and is idempotent", () => {
   const before = structuredClone(layout);
   assert.equal(enableGitPanel(layout), true);
   assert.equal(enableGitPanel(layout), false);
-  const git = layout.children[1].children.pop();
-  assert.equal(git.id, "git");
-  assert.equal(git.content.mod, "orca-commits");
+  const changes = layout.children[1].children[1];
+  assert.equal(changes.id, "changes");
+  assert.equal(changes.content.mod, "orca-commits");
   assert.equal(layout.children[0].content.mod, "orca-tabs");
   layout.children[0].content.mod = "tabs";
+  changes.content.mod = "changes";
   assert.deepEqual(layout, before);
 });
 
@@ -455,4 +467,79 @@ test("i focuses the commit message and Escape returns to navigation without chan
   h.view.mode = "history";
   h.key("i");
   assert.equal(inputFocused, 1);
+});
+
+
+test("merging Git into Changes retains saved layout sizing, active choice and custom panels", () => {
+  const layout = {id: "panel-body", type: "stack", active: "git", size: {px: 640}, children: [
+    {id: "changes", content: {mod: "changes"}},
+    {id: "git", content: {mod: "orca-commits"}},
+    {id: "custom", content: {mod: "custom"}},
+  ]};
+  assert.equal(enableGitPanel(layout), true);
+  assert.equal(layout.active, "changes");
+  assert.equal(layout.size.px, 640);
+  assert.deepEqual(layout.children.map(child => child.id), ["changes", "custom"]);
+  assert.equal(enableGitPanel(layout), false);
+  const custom = {id: "panel-body", type: "stack", children: [{id: "changes", content: {mod: "my-changes"}}, {id: "git", content: {mod: "orca-commits"}}]};
+  enableGitPanel(custom);
+  assert.equal(custom.children[0].content.mod, "my-changes");
+  assert.equal(custom.children.length, 2);
+});
+
+test("Changes shortcut is scoped to Orca and preserves customized bindings", () => {
+  const keys = {global: {"cmd-shift-g": "other.command"}};
+  assert.equal(enableChangesShortcut(keys), true);
+  assert.equal(keys["layout:orca"]["cmd-shift-g"], "orca-tabs.changes");
+  assert.equal(keys.global["cmd-shift-g"], "other.command");
+  assert.equal(enableChangesShortcut(keys), false);
+  keys["layout:orca"]["cmd-shift-g"] = "my.command";
+  assert.equal(enableChangesShortcut(keys), false);
+});
+
+test("file watching refreshes local Changes and cancels watches on folder changes and close", async () => {
+  const h = panelHarness("changes");
+  await h.resolve(0, {root: "/first", changes: []});
+  assert.equal(h.watches[0].root, "/first");
+  h.watches[0].resolve(["/first/a"]);
+  await new Promise(setImmediate);
+  assert.equal(h.pending[1].args[0], "git-status");
+  h.watches[1].resolve(["/first/b"]);
+  await new Promise(setImmediate);
+  assert.equal(h.pending.length, 2); // Coalesce while status is loading.
+  await h.resolve(1, {root: "/first", changes: []});
+  assert.equal(h.pending.length, 3);
+  await h.resolve(2, {root: "/first", changes: []});
+  h.watches[2].resolve(["/first/.git/index"]);
+  await new Promise(setImmediate);
+  assert.equal(h.pending.length, 3);
+  h.setFolder("/second"); h.view.syncFolder(h.cx);
+  assert.equal(h.watches[3].canceled, true);
+  await h.resolve(3, {root: "/second", changes: []});
+  h.view.close();
+  assert.equal(h.watches[4].canceled, true);
+});
+
+test("remote contexts never load or mutate a local repository with the same folder", async () => {
+  const h = panelHarness("changes");
+  await h.resolve(0, {changes: [{path: "a"}]});
+  h.setMachine("server"); h.view.syncFolder(h.cx);
+  assert.match(h.view.error, /local workspaces only/);
+  assert.equal(h.pending.length, 1);
+  h.view.action("git-stage", null, h.cx);
+  h.view.load(h.cx);
+  assert.equal(h.pending.length, 1);
+  h.setMachine(null); h.view.syncFolder(h.cx);
+  assert.equal(h.pending.length, 2);
+});
+
+test("status supplies separate staged and working line counts and large previews are bounded", async () => {
+  const h = panelHarness("changes");
+  await h.resolve(0, {staged: [{path: "a"}], changes: [{path: "a"}], stats: {staged: {a: {add: 2, del: 1}}, working: {a: {add: 5, del: 3}}}});
+  assert.equal(h.view.files[0].add, 2);
+  assert.equal(h.view.files[1].add, 5);
+  h.view.selectFile(h.view.files[1], h.cx);
+  await h.resolve(1, {diff: "+a\n".repeat(1600)});
+  assert.equal(h.view.diffRows.length, 1500);
+  assert.equal(h.view.diffLimited, true);
 });

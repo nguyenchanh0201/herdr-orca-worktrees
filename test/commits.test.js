@@ -283,3 +283,23 @@ test("gitFile rejects binary, oversized, symlink, and escaping files", () => {
     assert.ok(gitFile(fx.primary, file).error, file);
   }
 });
+
+
+test("line counts distinguish index, working tree, literal untracked names and binary files", () => {
+  fs.writeFileSync(path.join(fx.primary, "a.txt"), "staged\nsecond\n");
+  git(fx.primary, ["add", "a.txt"]);
+  fs.writeFileSync(path.join(fx.primary, "a.txt"), "working\n");
+  fs.writeFileSync(path.join(fx.primary, "new\tfile.txt"), "new\nfile\n");
+  fs.writeFileSync(path.join(fx.primary, "binary"), Buffer.from([0, 1, 2]));
+  const status = gitStatus(fx.primary);
+  assert.deepEqual(status.stats.staged["a.txt"], {add: 2, del: 1, binary: false});
+  assert.deepEqual(status.stats.working["a.txt"], {add: 1, del: 2, binary: false});
+  assert.deepEqual(status.stats.untracked["new\tfile.txt"], {add: 2, del: 0});
+  assert.deepEqual(status.stats.untracked.binary, {binary: true});
+  assert.equal(status.root, fs.realpathSync(fx.primary));
+});
+
+test("line counts parse NUL-delimited rename paths", () => {
+  git(fx.primary, ["mv", "a.txt", "renamed\tfile.txt"]);
+  assert.deepEqual(gitStatus(fx.primary).stats.staged["renamed\tfile.txt"], {add: 0, del: 0, binary: false});
+});

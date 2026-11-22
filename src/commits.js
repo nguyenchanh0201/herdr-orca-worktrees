@@ -6,7 +6,7 @@ const FIELD_SEP = "\x1f";
 const RECORD_SEP = "\x1e";
 
 function gitRun(repo, args, opts = {}) {
-  return spawnSync("git", ["--literal-pathspecs", "-C", repo, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, ...opts });
+  return spawnSync("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false", "--literal-pathspecs", "-C", repo, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, ...opts });
 }
 
 // Status paths are always repository-relative, even when the selected folder
@@ -107,13 +107,26 @@ function gitError(result, fallback) {
   return (result.stderr || result.error?.message || result.stdout || fallback).trim();
 }
 
+function fileStats(repo, cached) {
+  const res = gitRun(repo, ["diff", ...(cached ? ["--cached"] : []), "--numstat", "-z", "--find-renames", "--no-ext-diff", "--no-textconv", "--"]);
+  if (res.status !== 0) return {};
+  const fields = res.stdout.split("\0"), stats = {};
+  for (let i = 0; i < fields.length && fields[i]; i++) {
+    const [add, del, ...parts] = fields[i].split("\t");
+    let file = parts.join("\t");
+    if (!file) { i++; file = fields[++i]; } // Rename: old and new names follow as NUL fields.
+    if (file) stats[file] = { add: Number(add) || 0, del: Number(del) || 0, binary: add === "-" };
+  }
+  return stats;
+}
+
 function gitStatus(repo) {
   const context = repositoryRoot(repo);
   if (context.error) return context;
   repo = context.root;
   const res = gitRun(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   if (res.status !== 0) return { error: gitError(res, "git status failed") };
-  const result = { branch: "", upstream: "", ahead: 0, behind: 0, staged: [], changes: [], untracked: [], conflicts: [] };
+  const result = { root: repo, branch: "", upstream: "", ahead: 0, behind: 0, staged: [], changes: [], untracked: [], conflicts: [] };
   const branch = gitRun(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
   result.branch = branch.status === 0 ? branch.stdout.trim() : `${gitRun(repo, ["rev-parse", "--short", "HEAD"]).stdout.trim()} (detached)`;
   const upstream = gitRun(repo, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
@@ -135,6 +148,16 @@ function gitStatus(repo) {
       if (index !== " " && index !== "!") result.staged.push({ status: index, ...file });
       if (working !== " " && working !== "!") result.changes.push({ status: working, ...file });
     }
+  }
+  const stagedStats = fileStats(repo, true), workingStats = fileStats(repo, false);
+  result.stats = { staged: stagedStats, working: workingStats, untracked: {} };
+  for (const file of result.untracked) {
+    try {
+      const absolute = path.join(repo, file.path), stat = fs.lstatSync(absolute);
+      if (!stat.isFile() || stat.size > 400000) continue;
+      const bytes = fs.readFileSync(absolute), text = bytes.toString("utf8");
+      result.stats.untracked[file.path] = bytes.includes(0) ? { binary: true } : { add: text ? text.split("\n").length - Number(text.endsWith("\n")) : 0, del: 0 };
+    } catch { /* Stats are optional; a disappearing file will be removed on refresh. */ }
   }
   return result;
 }
