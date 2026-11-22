@@ -184,7 +184,7 @@ export default class OrcaCommits extends View {
 
   async cli(args) {
     if (this.machine) throw new Error("Changes currently supports local workspaces only");
-    const r = await exec(config.node, [config.cli, ...args], { timeout: args[0] === "git-push" ? 150000 : 30000 });
+    const r = await exec(config.node, [config.cli, ...args], { timeout: ["git-push", "git-pull", "git-fetch"].includes(args[0]) ? 150000 : 30000 });
     const parsed = JSON.parse((r.stdout || "").trim() || "{}");
     if (r.code !== 0 && !parsed.error) throw new Error((r.stderr || r.stdout || `exit ${r.code}`).trim());
     return parsed;
@@ -411,6 +411,15 @@ export default class OrcaCommits extends View {
     const key = e.key === "g" && (e.modifiers?.shift || e.key_char === "G") ? "G" : e.key;
     if (e.modifiers?.platform || e.modifiers?.alt) return;
     if (e.modifiers?.control && !["ctrl-d", "ctrl-u"].includes(chord)) return;
+    const shiftedKey = e.modifiers?.shift ? e.key.toUpperCase() : e.key_char || e.key;
+    if (this.mode === "changes" && this.handle.is_focused() && !e.modifiers?.control && ["P", "U"].includes(shiftedKey)) {
+      this.count = "";
+      this.lastG = 0;
+      if (shiftedKey === "P") this.push(cx);
+      else this.pull(cx);
+      if (consume) cx.stop_propagation();
+      return;
+    }
     if (this.mode === "changes" && key === "i") {
       this.count = "";
       this.lastG = 0;
@@ -682,6 +691,34 @@ export default class OrcaCommits extends View {
     this.action("git-push", null, cx);
   }
 
+  pull(cx) {
+    if (!this.status.pull?.remote || this.status.pull?.reason) return;
+    this.action("git-pull", null, cx);
+  }
+
+  fetch(cx) {
+    if (!this.status.pull?.remote && !this.status.push?.remote) return;
+    this.action("git-fetch", null, cx);
+  }
+
+  primaryActions(t) {
+    const enabled = !this.busy && !this.loading && !this.error;
+    const actions = [];
+    if (!this.message.value().trim()) {
+      if (this.status.behind > 0 && this.status.pull?.remote && !this.status.pull.reason)
+        actions.push({ id: "git-pull", label: `Pull ${this.status.behind} ↓`, busy: "Pulling…", enabled, run: cx => this.pull(cx) });
+      if ((this.status.ahead > 0 || this.status.push?.needsUpstream) && this.status.push?.remote && !this.status.push.reason)
+        actions.push({ id: "git-push", label: this.status.push.needsUpstream ? "Push · publish ↑" : `Push ${this.status.ahead} ↑`, busy: "Pushing…", enabled, run: cx => this.push(cx) });
+    }
+    if (!actions.length) actions.push({ id: "git-commit", label: "✓  Commit", busy: "Committing…",
+      enabled: enabled && Boolean(this.message.value().trim()) && Boolean(this.status.staged?.length) && !this.status.conflicts?.length, run: cx => this.commit(cx) });
+    return h_flex().gap(6).children(actions.map(action =>
+      div().id(action.id).h(30).flex_1().flex().items_center().justify_center().rounded(3)
+        .bg(action.enabled ? t.accent : t.raised).text_color(action.enabled ? t.accent_foreground : t.dim).cursor_pointer()
+        .on_click((_e, cx) => { if (action.enabled) action.run(cx); })
+        .child(this.busyCommand === action.id ? action.busy : action.label)));
+  }
+
   tool(id, label, action, t, enabled = true) {
     return div().id(id).h(24).px(7).flex().items_center().justify_center().rounded(3)
       .text_color(enabled ? t.foreground : t.dim).cursor_pointer().hover(s => s.bg(t.hover))
@@ -726,7 +763,6 @@ export default class OrcaCommits extends View {
 
   sourceControl(t) {
     const enabled = !this.busy && !this.loading && !this.error;
-    const canCommit = enabled && Boolean(this.message.value().trim()) && Boolean(this.status.staged?.length) && !this.status.conflicts?.length;
     const entries = this.sourceEntries();
     const id = `git-source-${this.panel ? "panel" : "dialog"}`;
     return v_resizable(`${id}-files`).size_full().on_resize(sizes => this.rememberSizes(id, sizes))
@@ -735,13 +771,11 @@ export default class OrcaCommits extends View {
         .child(h_flex().gap(6).items_center()
           .child(svg("mods/orca-commits/branch.svg").size(14).text_color(t.dim))
           .child(div().flex_1().truncate().child(this.status.branch || "Repository"))
-          .child(this.tool("git-push", this.busyCommand === "git-push" ? "Pushing…" : this.status.push?.needsUpstream ? "↑ Push · publish" : `↑ Push${this.status.ahead ? ` ${this.status.ahead}` : ""}`, cx => this.push(cx), t, enabled && Boolean(this.status.push?.remote) && !this.status.push?.reason))
+          .child(this.tool("git-fetch", this.busyCommand === "git-fetch" ? "Fetching…" : "Fetch", cx => this.fetch(cx), t, enabled && Boolean(this.status.pull?.remote || this.status.push?.remote)))
           .when(Boolean(this.status.upstream), el => el.child(div().text_size(10).text_color(t.dim).child(`${this.status.behind || 0}↓ ${this.status.ahead || 0}↑`))))
         .when(Boolean(this.status.push?.reason), el => el.child(div().text_size(10).text_color(t.dim).child(this.status.push.reason)))
         .child(Input.new(this.message).id("commit-message").h(36).px(8).rounded(3).border(1).border_color(this.editing ? t.accent : t.input).bg(t.background).text_color(t.foreground))
-        .child(div().id("git-commit").h(30).flex().items_center().justify_center().rounded(3)
-          .bg(canCommit ? t.accent : t.raised).text_color(canCommit ? t.accent_foreground : t.dim).cursor_pointer()
-          .on_click((_e, cx) => this.commit(cx)).child(this.busyCommand === "git-commit" ? "Committing…" : "✓  Commit"))
+        .child(this.primaryActions(t))
         .when(Boolean(this.actionError), el => el.child(div().text_size(11).text_color(t.blocked).child(this.actionError)))))
       .child(resizable_panel().size(this.savedSize(id, 1, 180)).size_range(60).child(v_flex().id("source-files").size_full().min_h(0).overflow_hidden()
         .children(entries.filter(entry => entry.header).map(entry => {
@@ -807,6 +841,6 @@ export default class OrcaCommits extends View {
         .child(this.error ? div().absolute().inset_0().overflow_y_scroll().p(12).text_color(t.blocked).child(this.error)
           : this.sections(t).absolute().inset_0()))
       .child(div().id("git-shortcuts").h(24).flex_none().px(10).flex().items_center().text_size(10).text_color(t.dim).border_t(1).border_color(t.border)
-        .child(this.mode === "changes" ? this.editing ? "⌘⇧H/L panes · Esc navigation · ⌘Enter commit" : "i message · j/k move · ⌘⇧H/L panes · s stage/unstage · r refresh · ⌘Enter commit" : "j/k move · ⌘⇧H/L panes · gg/G ends · Ctrl-d/u page"));
+        .child(this.mode === "changes" ? this.editing ? "⌘⇧H/L panes · Esc navigation · ⌘Enter commit" : "i message · j/k move · ⌘⇧H/L panes · s stage/unstage · ⇧P push · ⇧U pull · r refresh · ⌘Enter commit" : "j/k move · ⌘⇧H/L panes · gg/G ends · Ctrl-d/u page"));
   }
 }

@@ -25,7 +25,7 @@ Herdr's GPUI controls and theme colors provide the native implementation. The di
 
 ## Scope and remaining gaps
 
-Core local source-control workflow and history are implemented and covered by temporary-repository and view-state tests. This is not complete VS Code extension parity: branch checkout, fetch/pull/push/sync, discard, stash, amend, hunk staging, graph lanes, and a side-by-side editable diff are not implemented here. VS Code's runtime appearance and these additional operations were not investigated. The compact native layout is an adaptation rather than a pixel-for-pixel workbench copy.
+Core local source-control workflow and history are implemented and covered by temporary-repository and view-state tests. This is not complete VS Code extension parity: branch checkout, combined sync, discard, stash, amend, hunk staging, graph lanes, and a side-by-side editable diff are not implemented here. VS Code's runtime appearance and these additional operations were not investigated. The compact native layout is an adaptation rather than a pixel-for-pixel workbench copy.
 
 ## Validation
 
@@ -51,7 +51,7 @@ This version explicitly supports local workspaces. Remote contexts are detected 
 
 ## Push and History
 
-The commit form now includes **↑ Push**, with ahead counts when tracked. A new branch displays **Push · publish** and sets an upstream on success. The destination follows the configured push remote or upstream; otherwise origin or a sole remote is selected. Ambiguous remotes, detached HEAD and unborn branches give explicit reasons. An explicit branch refspec prevents broad configured push refspecs from publishing other branches. Push runs with a bounded timeout and noninteractive Git credential prompting; errors remain visible, and user drafts are preserved. It never implicitly stages or commits. Tests use local bare remotes for initial publication, differently named upstreams and rejected updates.
+When the message is empty, the main commit action becomes **Push N ↑** or **Pull N ↓**, with both actions available when ahead and behind. Typing a message restores Commit. **Fetch** updates remote tracking refs and incoming counts without changing working files; polling remains local. Pull explicitly uses fast-forward-only, no rebase and no autostash, reporting divergent branches or overlapping local edits as errors. A new branch displays **Push · publish ↑** and sets an upstream on success. The destination follows the configured push remote or upstream; otherwise origin or a sole remote is selected. Ambiguous remotes, detached HEAD and unborn branches give explicit reasons. An explicit branch refspec prevents broad configured push refspecs from publishing other branches. Push runs with a bounded timeout and noninteractive Git credential prompting; errors remain visible, and user drafts are preserved. It never implicitly stages or commits. Tests use local bare remotes for initial publication, differently named upstreams and rejected updates.
 
 Commit history is available through the **History** tab (`⌘L`). The duplicate inline Recent commits list has been removed from Changes, returning its space to file groups and the diff. Status refresh no longer fetches a separate commit log, and Tab in Changes cycles only between files and diff. The existing commit-form and file-list size preferences remain in use; the retired third section size is ignored.
 

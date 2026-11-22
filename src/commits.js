@@ -124,6 +124,21 @@ function pushTarget(repo) {
   return { remote, ref, needsUpstream: !trackedRemote || !trackedRef };
 }
 
+function pullTarget(repo) {
+  const branchResult = gitRun(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  if (branchResult.status !== 0) return { reason: "Check out a branch before pulling" };
+  const branch = branchResult.stdout.trim();
+  const remote = gitRun(repo, ["config", "--get", `branch.${branch}.remote`]).stdout?.trim();
+  const ref = gitRun(repo, ["config", "--get", `branch.${branch}.merge`]).stdout?.trim();
+  if (!remote || !ref) return { reason: "Configure an upstream branch before pulling" };
+  if (!ref.startsWith("refs/heads/") || ref.includes("\n")) return { reason: "Configure a single upstream branch before pulling" };
+  return { remote, ref };
+}
+
+function networkGit(repo, args) {
+  return gitRun(repo, args, { timeout: 120000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+}
+
 function fileStats(repo, cached) {
   const res = gitRun(repo, ["diff", ...(cached ? ["--cached"] : []), "--numstat", "-z", "--find-renames", "--no-ext-diff", "--no-textconv", "--"]);
   if (res.status !== 0) return {};
@@ -177,6 +192,7 @@ function gitStatus(repo) {
     } catch { /* Stats are optional; a disappearing file will be removed on refresh. */ }
   }
   result.push = pushTarget(repo);
+  result.pull = pullTarget(repo);
   return result;
 }
 
@@ -238,11 +254,27 @@ function gitPush(repo) {
   const target = pushTarget(context.root);
   if (target.reason) return { error: target.reason };
   // An explicit refspec publishes only this branch, regardless of push.default.
-  const res = gitRun(context.root, ["push", "--porcelain", ...(target.needsUpstream ? ["--set-upstream"] : []), "--", target.remote, `HEAD:${target.ref}`], {
-    timeout: 120000,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-  });
+  const res = networkGit(context.root, ["push", "--porcelain", ...(target.needsUpstream ? ["--set-upstream"] : []), "--", target.remote, `HEAD:${target.ref}`]);
   return res.status === 0 ? { ok: true, remote: target.remote } : { error: gitError(res, "git push failed") };
+}
+
+function gitPull(repo) {
+  const context = repositoryRoot(repo);
+  if (context.error) return context;
+  const target = pullTarget(context.root);
+  if (target.reason) return { error: target.reason };
+  const res = networkGit(context.root, ["pull", "--ff-only", "--no-rebase", "--no-autostash", "--", target.remote, target.ref]);
+  return res.status === 0 ? { ok: true } : { error: gitError(res, "git pull failed") };
+}
+
+function gitFetch(repo) {
+  const context = repositoryRoot(repo);
+  if (context.error) return context;
+  const incoming = pullTarget(context.root), outgoing = pushTarget(context.root);
+  const remote = incoming.remote || outgoing.remote;
+  if (!remote) return { error: "Configure a remote before fetching" };
+  const res = networkGit(context.root, ["fetch", "--", remote]);
+  return res.status === 0 ? { ok: true } : { error: gitError(res, "git fetch failed") };
 }
 
 // Read the current working file, never the index or historical blob. The host
@@ -273,4 +305,4 @@ function gitFile(repo, file) {
   }
 }
 
-module.exports = { listCommits, commitFiles, commitDiff, gitStatus, gitStage, gitUnstage, gitCommit, gitPush, gitFile };
+module.exports = { listCommits, commitFiles, commitDiff, gitStatus, gitStage, gitUnstage, gitCommit, gitPush, gitPull, gitFetch, gitFile };

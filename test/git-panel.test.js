@@ -718,3 +718,74 @@ test("pane navigation crosses Changes sections and exits the panel at either edg
   await h.command("back");
   assert.equal(h.view.lane, "commits");
 });
+
+function actionButtons(h) {
+  return h.view.primaryActions(h.colors).items;
+}
+
+test("empty message offers counted Push and Pull; typing restores Commit", async () => {
+  const h = panelHarness("changes");
+  await h.resolve(0, {ahead: 3, behind: 2, push: {remote: "origin"}, pull: {remote: "origin"}, staged: [{path: "a"}]});
+  let buttons = actionButtons(h);
+  assert.deepEqual(Array.from(buttons, b => b.items[0]), ["Pull 2 ↓", "Push 3 ↑"]);
+  h.view.message.set_value("commit draft");
+  buttons = actionButtons(h);
+  assert.equal(buttons.length, 1);
+  assert.equal(buttons[0].styles.id, "git-commit");
+  h.view.message.set_value("");
+  h.view.status.behind = 0;
+  assert.equal(actionButtons(h)[0].items[0], "Push 3 ↑");
+  h.view.status.ahead = 0;
+  h.view.status.behind = 2;
+  buttons = actionButtons(h);
+  assert.equal(buttons[0].items[0], "Pull 2 ↓");
+  buttons[0].styles.on_click({}, h.cx);
+  assert.equal(h.pending[1].args[0], "git-pull");
+  assert.equal(actionButtons(h)[0].items[0], "Pulling…");
+  actionButtons(h)[0].styles.on_click({}, h.cx);
+  assert.equal(h.pending.length, 2);
+  await h.resolve(1, {error: "Cannot fast-forward"});
+  assert.match(h.view.actionError, /fast-forward/);
+  await h.resolve(2, {ahead: 0, behind: 0});
+  assert.equal(actionButtons(h)[0].styles.id, "git-commit");
+});
+
+test("Fetch refreshes status without clearing a commit draft", async () => {
+  const h = panelHarness("changes");
+  await h.resolve(0, {pull: {remote: "origin"}});
+  h.view.message.set_value("keep me");
+  h.view.fetch(h.cx);
+  assert.equal(h.pending[1].args[0], "git-fetch");
+  await h.resolve(1, {ok: true});
+  assert.equal(h.pending[2].args[0], "git-status");
+  assert.equal(h.view.message.value(), "keep me");
+});
+
+for (const [key, command] of [["p", "git-push"], ["u", "git-pull"]]) {
+  test(`Shift ${key.toUpperCase()} runs ${command} only in focused Changes navigation`, async () => {
+    const h = panelHarness("changes");
+    await h.resolve(0, {push: {remote: "origin"}, pull: {remote: "origin"}});
+    h.key(key);
+    h.setPanelFocus(false);
+    h.key(key, {shift: true});
+    h.setPanelFocus(true);
+    h.view.editing = true;
+    h.key(key, {shift: true});
+    h.view.editing = false;
+    h.view.mode = "history";
+    h.key(key, {shift: true});
+    h.view.mode = "changes";
+    for (const modifier of ["control", "platform", "alt"]) h.key(key, {shift: true, [modifier]: true});
+    assert.equal(h.pending.length, 1);
+    h.key(key, {shift: true});
+    assert.equal(h.pending[1].args[0], command);
+    h.key(key, {shift: true});
+    assert.equal(h.pending.length, 2);
+  });
+  test(`uppercase ${key.toUpperCase()} events run ${command}`, async () => {
+    const h = panelHarness("changes");
+    await h.resolve(0, {push: {remote: "origin"}, pull: {remote: "origin"}});
+    h.key(key.toUpperCase());
+    assert.equal(h.pending[1].args[0], command);
+  });
+}

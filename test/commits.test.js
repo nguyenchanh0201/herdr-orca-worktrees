@@ -5,7 +5,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const { makeRepo } = require("./helpers/repo");
-const { listCommits, commitFiles, commitDiff, gitStatus, gitStage, gitUnstage, gitCommit, gitPush, gitFile } = require("../src/commits");
+const { listCommits, commitFiles, commitDiff, gitStatus, gitStage, gitUnstage, gitCommit, gitPush, gitPull, gitFetch, gitFile } = require("../src/commits");
 
 function git(cwd, args) {
   const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
@@ -372,4 +372,64 @@ test("Push explains missing or ambiguous remotes, detached HEAD, and unborn bran
 test("Changes status leaves history loading to the History tab", () => {
   assert.equal(gitStatus(fx.primary).history, undefined);
   assert.equal(listCommits(fx.primary).commits[0].subject, "init");
+});
+
+function incomingPeer() {
+  const remote = path.join(fx.primary, "..", "remote.git");
+  const peer = path.join(fx.primary, "..", "peer");
+  git(fx.primary, ["init", "--bare", remote]);
+  git(fx.primary, ["remote", "add", "origin", remote]);
+  assert.equal(gitPush(fx.primary).ok, true);
+  const branch = git(fx.primary, ["symbolic-ref", "--short", "HEAD"]);
+  git(fx.primary, ["clone", "--branch", branch, remote, peer]);
+  fs.writeFileSync(path.join(peer, "a.txt"), "incoming\n");
+  git(peer, ["add", "a.txt"]);
+  git(peer, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "Incoming change"]);
+  git(peer, ["push"]);
+  return peer;
+}
+
+test("Fetch discovers incoming commits and Pull fast-forwards through the CLI", () => {
+  const peer = incomingPeer();
+  assert.equal(gitStatus(fx.primary).behind, 0);
+  const head = git(fx.primary, ["rev-parse", "HEAD"]);
+  for (const command of ["git-fetch", "git-pull"]) {
+    const result = spawnSync(process.execPath, [path.join(__dirname, "../bin/orca-wt.js"), command, fx.primary], {encoding: "utf8"});
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+    if (command === "git-fetch") {
+      assert.equal(gitStatus(fx.primary).behind, 1);
+      assert.equal(git(fx.primary, ["rev-parse", "HEAD"]), head);
+    }
+  }
+  assert.equal(git(fx.primary, ["rev-parse", "HEAD"]), git(peer, ["rev-parse", "HEAD"]));
+  assert.equal(gitStatus(fx.primary).behind, 0);
+});
+
+test("Pull refuses divergent branches even when rebasing is configured", () => {
+  incomingPeer();
+  fs.writeFileSync(path.join(fx.primary, "local.txt"), "local\n");
+  git(fx.primary, ["add", "local.txt"]);
+  git(fx.primary, ["commit", "-m", "Local change"]);
+  git(fx.primary, ["config", "pull.rebase", "true"]);
+  assert.equal(gitFetch(fx.primary).ok, true);
+  const status = gitStatus(fx.primary);
+  assert.equal(status.ahead, 1);
+  assert.equal(status.behind, 1);
+  const head = git(fx.primary, ["rev-parse", "HEAD"]);
+  assert.match(gitPull(fx.primary).error, /fast-forward/i);
+  assert.equal(git(fx.primary, ["rev-parse", "HEAD"]), head);
+});
+
+test("Pull preserves overlapping edits and does not auto-stash", () => {
+  incomingPeer();
+  git(fx.primary, ["config", "merge.autoStash", "true"]);
+  fs.writeFileSync(path.join(fx.primary, "a.txt"), "staged\n");
+  git(fx.primary, ["add", "a.txt"]);
+  fs.writeFileSync(path.join(fx.primary, "a.txt"), "working\n");
+  const head = git(fx.primary, ["rev-parse", "HEAD"]);
+  assert.match(gitPull(fx.primary).error, /overwritten|local changes/i);
+  assert.equal(git(fx.primary, ["rev-parse", "HEAD"]), head);
+  assert.equal(git(fx.primary, ["show", ":a.txt"]), "staged");
+  assert.equal(fs.readFileSync(path.join(fx.primary, "a.txt"), "utf8"), "working\n");
+  assert.equal(git(fx.primary, ["stash", "list"]), "");
 });

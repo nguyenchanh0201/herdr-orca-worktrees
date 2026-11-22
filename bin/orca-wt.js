@@ -206,6 +206,12 @@ async function main() {
     case "git-push":
       result = commits.gitPush(rest[0]);
       break;
+    case "git-pull":
+      result = commits.gitPull(rest[0]);
+      break;
+    case "git-fetch":
+      result = commits.gitFetch(rest[0]);
+      break;
     default:
       result = { error: cmd ? `unknown command: ${cmd}` : "missing command" };
   }
