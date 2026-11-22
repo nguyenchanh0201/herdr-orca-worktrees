@@ -1,6 +1,7 @@
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { run, setShared, openOverlay } from "herdr";
+import { navigationChild } from "./navigation.view.js";
 import { label, agentSummary, topStatus, STATUS_GLYPH, elapsed } from "./group.js";
 
 export function renderRow(view, row, t, opts = {}) {
@@ -166,18 +167,26 @@ export function renderCard(view, row, rowAgents, sleepingAgents, t, now, opts = 
     .child(div().flex_none().text_color(t.dim).child("⌄"));
   card.child(head);
 
+  const agentScroll = view.agentScrolls.get(foldKey);
+  const childRows = [];
+  const register = (node, entry, i) => opts.navigation ? navigationChild(view, {
+    ...entry, parent: opts.navigation.key, index: opts.navigation.index, agentScroll, agentIndex: i,
+  }, node, t) : node;
   if (sleeping) {
     for (let i = 0; i < sleepList.length; i++) {
-      card.child(view.renderSleepingAgent(sleepList[i], row, t, i));
+      childRows.push(register(view.renderSleepingAgent(sleepList[i], row, t, i), {
+        key: `sleeping:${cardKey}:${i}:${sleepList[i].name ?? sleepList[i].kind}`, row, worktree,
+      }, i));
     }
   } else {
-    for (const a of live) {
+    for (let i = 0; i < live.length; i++) {
+      const a = live[i];
       const dur = elapsed(now - (view.since.get(a.address)?.at ?? now));
       const status = a.status ?? "";
       const statusLabel = status ? status[0].toUpperCase() + status.slice(1) : "Unknown";
       const name = a.program?.name ?? a.app ?? "";
       const labelText = name ? `${statusLabel} - ${name}` : statusLabel;
-      card.child(
+      childRows.push(register(
         h_flex()
           .id(`agent-${a.address}`)
           .h(24)
@@ -188,14 +197,16 @@ export function renderCard(view, row, rowAgents, sleepingAgents, t, now, opts = 
           .rounded(6)
           .cursor_pointer()
           .hover((s) => s.bg(t.hover))
-          .on_click(() => run("pane.focus", { pane: a.pane }))
+          .on_click(() => run("pane.focus", a.pane ? { pane: a.pane } : { terminal: a.address }))
           .child(div().flex_none().text_color(t[a.status] ?? t.unknown).child(STATUS_GLYPH[a.status] ?? "○"))
           .child(view.agentIcon(a, t))
           .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(labelText))
-          .when(Boolean(dur), (el) => el.child(div().flex_none().text_color(t.dim).child(dur)))
-      );
+          .when(Boolean(dur), (el) => el.child(div().flex_none().text_color(t.dim).child(dur))),
+        { key: `agent:${a.address}`, agent: a }, i
+      ));
     }
   }
 
-  return card;
+  return card.child(v_flex().id(`agents-list-${cardKey}`).h(Math.min(168, count * 24)).min_h(0).overflow_y_scroll()
+    .when(Boolean(agentScroll), el => el.track_scroll(agentScroll)).children(childRows));
 }

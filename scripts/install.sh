@@ -18,7 +18,7 @@ FULL=0
 MODS=("$@")
 if [[ ${#MODS[@]} -eq 0 ]]; then
   FULL=1
-  MODS=(orca-setup orca-remove projects orca-worktree orca-project orca-commits orca-usage orca-usage-panel orca-tabs orca-resources orca-resources-panel)
+  MODS=(orca-setup orca-remove projects orca-agents orca-worktree orca-project orca-commits orca-usage orca-usage-panel orca-tabs orca-resources orca-resources-panel)
 fi
 
 # The orca-wt CLI needs its npm dependency (yaml).

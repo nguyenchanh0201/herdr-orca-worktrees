@@ -1,6 +1,6 @@
 import { View, div } from "gpui-kit";
 import { v_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, machines, agents, setAgentOrder, exec, theme, checking, layout, shared, setShared, knownAgents } from "herdr";
+import { spaces, panes, machines, agents, setAgentOrder, exec, theme, checking, layout, shared, setShared, knownAgents, nextCommand } from "herdr";
 import { placeOf, group, visibleRows, label, agentsBySpace, activitySort, hideMainRows, projectGroups } from "./group.js";
 import { agentKind } from "./sleep.js";
 import { findNode } from "./sidebar.js";
@@ -11,9 +11,16 @@ import { sleepingAgentIcon, renderSleepingAgent, renderActivitySleepingAgent, ag
 import { loadSleeping, handleSleep } from "./sleep-flow.view.js";
 import { handleWake } from "./wake-flow.view.js";
 import { check, pump } from "./sync.view.js";
+import { finishNavigation, selectNavigation, navigationKeyDown } from "./navigation.view.js";
 
 export default class Projects extends View {
   init(_p, cx) {
+    this.handle = cx.focus_handle();
+    this.navigation = [];
+    this.navKey = null;
+    this.navCount = "";
+    this.navLastG = 0;
+    this.agentScrolls = new Map();
     this.repo = new Map();
     this.inflight = new Set();
     this.queue = [];
@@ -33,6 +40,7 @@ export default class Projects extends View {
       const raw = localStorage.getItem("projects.agentsOpen");
       if (raw) this.agentsOpen = new Set(JSON.parse(raw));
     } catch {}
+    for (const key of this.agentsOpen) this.agentScrolls.set(key, ScrollHandle.new());
     this.view = "projects";
     try {
       const v = localStorage.getItem("projects.view");
@@ -73,6 +81,21 @@ export default class Projects extends View {
 
     if (checking()) return;
 
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const command = await nextCommand();
+        if (command === "focus") {
+          this.handle.focus();
+          const entry = this.navigation.find(item => item.key === this.navKey) || this.navigation.find(item => item.active) || this.navigation[0];
+          if (entry) this.selectNavigation(entry.key, cx);
+          this.navCount = "";
+          this.navLastG = 0;
+          cx.notify();
+        }
+        const key = { next: "j", previous: "k", first: "home", last: "G", expand: "l", collapse: "h", open: "enter" }[command];
+        if (key) this.keyDown({ key }, cx);
+      }
+    });
     setShared("orca.projects.options", this.options);
     cx.spawn(async (cx) => {
       const r = await this.cli(["projects", "logins"]);
@@ -183,10 +206,18 @@ export default class Projects extends View {
 
   renderTopHeader(targetRepo, t) { return renderTopHeader(this, targetRepo, t); }
 
+  focusFrame(element, t) {
+    return element.id("projects").track_focus(this.handle)
+      .on_key_down((e, cx) => this.keyDown(e, cx))
+      .on_mouse_down("left", (_e, cx) => { this.handle.focus(); cx.notify(); })
+      .border(1).border_color(this.handle.is_focused() ? t.accent : "#00000000");
+  }
+
   render() {
     const t = theme();
+    this.navigation = [];
     if ((findNode(layout(), "sidebar")?.size?.px ?? Infinity) < 160) {
-      return div().size_full().bg(t.chrome);
+      return this.focusFrame(div().size_full().bg(t.chrome), t);
     }
     const sps = spaces();
     const ps = panes();
@@ -259,12 +290,17 @@ export default class Projects extends View {
         } else {
           const children = sorted.map((a) => {
             const sp = spaceById.get(a.space);
-            return this.renderActivityAgent(a, sp ? label(sp, this.logins) : "", t, now);
+            const node = this.renderActivityAgent(a, sp ? label(sp, this.logins) : "", t, now);
+            this.navigation.push({ key: `agent:${a.address}`, agent: a, active: Boolean(a.focused), index: this.navigation.length, node });
+            return node;
           });
           for (let i = 0; i < sleepingEntries.length; i++) {
             const { sa, row, rowLabel } = sleepingEntries[i];
-            children.push(this.renderActivitySleepingAgent(sa, row, rowLabel, t, i));
+            const node = this.renderActivitySleepingAgent(sa, row, rowLabel, t, i);
+            this.navigation.push({ key: `sleeping:${row.worktree}:${sa.name}:${i}`, row, worktree: row.worktree, index: children.length, node });
+            children.push(node);
           }
+          finishNavigation(this, this.navigation, t);
           body = v_flex().flex_1().min_h(0).px(8).overflow_y_scrollbar().track_scroll(this.scroll)
             .children(children);
         }
@@ -292,14 +328,18 @@ export default class Projects extends View {
           const isGroup = Boolean(section.key);
           const groupCollapsed = isGroup && this.collapsed.has(section.key);
           if (isGroup) {
-            children.push(this.renderGroupHeader(section, groupCollapsed, t, children.length === 0));
+            const node = this.renderGroupHeader(section, groupCollapsed, t, children.length === 0);
+            this.navigation.push({ key: `group:${section.key}`, collapseKey: section.key, index: children.length, node });
+            children.push(node);
           }
           for (const g of section.projects) {
             if (groupCollapsed && !g.rows.some((r) => Boolean(r.space?.active))) {
               continue;
             }
             const isCollapsed = groupCollapsed || this.collapsed.has(g.key);
-            children.push(this.renderHeader(g, isCollapsed, t, children.length === 0, isGroup, groupNames));
+            const node = this.renderHeader(g, isCollapsed, t, children.length === 0, isGroup, groupNames);
+            this.navigation.push({ key: `project:${g.key}`, collapseKey: g.key, parent: isGroup ? `group:${section.key}` : null, index: children.length, node });
+            children.push(node);
             const rows = visibleRows(g, isCollapsed);
             for (const row of rows) {
               if (row.space?.active) {
@@ -314,7 +354,12 @@ export default class Projects extends View {
                   order.push(a.address);
                 }
               }
-              children.push(this.renderCard(row, rowAgents, sleepingAgents, t, now, { hasAgents, worktree, indented: isGroup }));
+              const agentsKey = worktree ? (row.space?.machine ? `${row.space.machine}:${worktree}` : worktree) : row.space?.id;
+              const entry = { key: `worktree:${row.space?.id ?? worktree}`, row, worktree, agentsKey: (rowAgents.length || sleepingAgents.length) ? agentsKey : null, active: Boolean(row.space?.active), parent: `project:${g.key}`, index: children.length };
+              this.navigation.push(entry);
+              const node = this.renderCard(row, rowAgents, sleepingAgents, t, now, { hasAgents, worktree, indented: isGroup, navigation: entry });
+              entry.node = node;
+              children.push(node);
             }
           }
         }
@@ -328,15 +373,21 @@ export default class Projects extends View {
 
         setAgentOrder(order);
 
+        finishNavigation(this, this.navigation, t);
         body = v_flex().flex_1().min_h(0).px(8).overflow_y_scrollbar().track_scroll(this.scroll)
           .children(children);
       }
     }
 
-    return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
+    return this.focusFrame(v_flex().size_full().min_h(0).bg(t.chrome).text_size(13), t)
       .child(this.renderTopHeader(targetRepo, t))
-      .child(body);
+      .child(body)
+      .child(div().h(20).flex_none().px(8).text_size(10).text_color(t.dim).child("j/k move · h/l fold · Enter open"));
   }
+
+  keyDown(e, cx) { return navigationKeyDown(this, e, cx); }
+
+  selectNavigation(key, cx) { return selectNavigation(this, key, cx); }
 
   toggleCollapsed(key, cx) {
     if (this.collapsed.has(key)) {
@@ -360,6 +411,7 @@ export default class Projects extends View {
 
   toggleAgents(worktree, cx) {
     if (!worktree) return;
+    if (!this.agentScrolls.has(worktree)) this.agentScrolls.set(worktree, ScrollHandle.new());
     if (this.agentsOpen.has(worktree)) this.agentsOpen.delete(worktree);
     else this.agentsOpen.add(worktree);
     try {

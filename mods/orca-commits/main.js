@@ -39,7 +39,6 @@ export default class OrcaCommits extends View {
     this.fileScroll = ScrollHandle.new();
     this.diffScroll = VirtualListScrollHandle.new();
     this.sourceScrolls = Object.fromEntries(["Merge Changes", "Staged Changes", "Changes"].map(section => [section, ScrollHandle.new()]));
-    this.recentScroll = ScrollHandle.new();
     this.panel = !props()?.overlay;
     this.folder = "";
     this.watchGeneration = 0;
@@ -52,8 +51,8 @@ export default class OrcaCommits extends View {
     this.collapsed = {};
     this.drafts = {};
     this.message = InputState.new({ placeholder: "Message (i to focus · ⌘Enter to commit)" });
-    this.message.on("focus", () => { this.editing = true; });
-    this.message.on("blur", () => { this.editing = false; });
+    this.message.on("focus", (_e, cx) => { this.editing = true; cx.notify(); });
+    this.message.on("blur", (_e, cx) => { this.editing = false; cx.notify(); });
     this.message.on("change", (_e, cx) => { this.drafts[this.folder] = this.message.value(); cx.notify(); });
     this.editLoading = false;
     this.editRequest = 0;
@@ -62,9 +61,6 @@ export default class OrcaCommits extends View {
     this.filesRequest = 0;
     this.diffRequest = 0;
     this.commits = [];
-    this.recentCommits = [];
-    this.recentCursor = 0;
-    this.recentError = "";
     this.files = [];
     this.loading = true;
     this.error = "";
@@ -91,8 +87,19 @@ export default class OrcaCommits extends View {
       for (;;) {
         const command = await nextCommand();
         if (command === "edit") this.openEditor(cx);
-        if (command === "changes" || command === "history") this.switchMode(command, cx);
+        if (command === "changes" || command === "history") {
+          this.count = "";
+          this.lastG = 0;
+          this.switchMode(command, cx);
+          this.handle.focus();
+          this.editing = false;
+          cx.notify();
+        }
         if (command === "focus") { this.handle.focus(); cx.notify(); }
+        if (command === "back" || command === "forward") {
+          this.navigatePane(command === "back" ? "left" : "right", cx);
+          continue;
+        }
         const key = { next: "j", previous: "k", forward: "l", back: "h", first: "home", last: "G" }[command];
         if (key) this.keyDown({ key }, cx, false);
       }
@@ -125,9 +132,6 @@ export default class OrcaCommits extends View {
     this.filesRequest++;
     this.diffRequest++;
     this.commits = [];
-    this.recentCommits = [];
-    this.recentCursor = 0;
-    this.recentError = "";
     this.files = [];
     this.selected = null;
     this.selectedFile = null;
@@ -351,11 +355,24 @@ export default class OrcaCommits extends View {
     cx.notify();
   }
 
+  navigatePane(direction, cx) {
+    const fromMessage = this.editing;
+    this.editing = false;
+    this.count = "";
+    this.lastG = 0;
+    this.handle.focus();
+    if (fromMessage && direction === "right") { this.focusLane("files", cx); return; }
+    const lanes = this.mode === "changes" ? ["files", "diff"] : ["commits", "files", "diff"];
+    const index = fromMessage ? -1 : Math.max(0, lanes.indexOf(this.lane));
+    const next = index + (direction === "right" ? 1 : -1);
+    if (next < 0 || next >= lanes.length) {
+      if (this.panel) run("pane.go", { direction });
+    } else this.focusLane(lanes[next], cx);
+    cx.notify();
+  }
+
   move(target, cx) {
-    if (this.lane === "recent") {
-      this.recentCursor = Math.max(0, Math.min(this.recentCommits.length - 1, target));
-      this.recentScroll.scroll_to_item(this.recentCursor);
-    } else if (this.lane === "commits") {
+    if (this.lane === "commits") {
       const keys = ["WORKING", ...this.commits.map(c => c.hash)];
       const index = Math.max(0, Math.min(keys.length - 1, target));
       this.select(keys[index], cx);
@@ -394,13 +411,6 @@ export default class OrcaCommits extends View {
     const key = e.key === "g" && (e.modifiers?.shift || e.key_char === "G") ? "G" : e.key;
     if (e.modifiers?.platform || e.modifiers?.alt) return;
     if (e.modifiers?.control && !["ctrl-d", "ctrl-u"].includes(chord)) return;
-    if (key === "[" || key === "]") {
-      this.count = "";
-      this.lastG = 0;
-      this.switchMode(key === "[" ? "changes" : "history", cx);
-      if (consume) cx.stop_propagation();
-      return;
-    }
     if (this.mode === "changes" && key === "i") {
       this.count = "";
       this.lastG = 0;
@@ -410,7 +420,7 @@ export default class OrcaCommits extends View {
       cx.notify();
       return;
     }
-    if (this.mode === "changes" && this.lane !== "recent" && key === "s") {
+    if (this.mode === "changes" && key === "s") {
       this.stageSelection(cx);
       this.count = "";
       this.lastG = 0;
@@ -425,8 +435,8 @@ export default class OrcaCommits extends View {
       return;
     }
     const entries = this.mode === "changes" ? this.sourceEntries() : this.files;
-    const keys = this.lane === "recent" ? this.recentCommits.map(c => c.hash) : this.lane === "commits" ? ["WORKING", ...this.commits.map(c => c.hash)] : this.files.map(f => f.path);
-    const index = this.lane === "recent" ? this.recentCursor : this.lane === "diff" ? this.diffCursor : this.lane === "files" && this.mode === "changes" ? entries.findIndex(f => this.selectedSection ? f.header === this.selectedSection : !f.header && f.path === this.selectedFile && f.group === this.selectedGroup) : keys.indexOf(this.lane === "commits" ? this.selected : this.selectedFile);
+    const keys = this.lane === "commits" ? ["WORKING", ...this.commits.map(c => c.hash)] : this.files.map(f => f.path);
+    const index = this.lane === "diff" ? this.diffCursor : this.lane === "files" && this.mode === "changes" ? entries.findIndex(f => this.selectedSection ? f.header === this.selectedSection : !f.header && f.path === this.selectedFile && f.group === this.selectedGroup) : keys.indexOf(this.lane === "commits" ? this.selected : this.selectedFile);
     const size = this.lane === "diff" ? this.diffRows.length : this.lane === "files" ? entries.length : keys.length;
     if (/^[1-9]$/.test(key) || (key === "0" && this.count)) {
       this.count = (this.count + key).slice(0, 4);
@@ -443,13 +453,10 @@ export default class OrcaCommits extends View {
       else if (key === "G" || key === "end") this.move(hadCount ? count - 1 : size - 1, cx);
       else if (key === "home") this.move(0, cx);
       else if (chord === "ctrl-d" || chord === "ctrl-u") this.move(index + (chord === "ctrl-d" ? 1 : -1) * count * (this.lane === "diff" ? Math.max(1, Math.floor(this.diffHeight / 40)) : 5), cx);
-      else if (["l", "right", "enter", "return"].includes(key)) {
-        if (this.lane === "recent") this.viewCommit(this.recentCommits[this.recentCursor]?.hash, cx);
-        else this.focusLane(this.lane === "commits" ? "files" : "diff", cx);
-      }
+      else if (["l", "right", "enter", "return"].includes(key)) this.focusLane(this.lane === "commits" ? "files" : "diff", cx);
       else if (["h", "left"].includes(key)) this.focusLane(this.lane === "diff" || this.mode === "changes" ? "files" : "commits", cx);
       else if (key === "tab" || chord === "shift-tab") {
-        const lanes = this.mode === "changes" ? ["files", "diff", "recent"] : ["commits", "files", "diff"];
+        const lanes = this.mode === "changes" ? ["files", "diff"] : ["commits", "files", "diff"];
         const step = e.modifiers?.shift || chord === "shift-tab" ? -1 : 1;
         this.focusLane(lanes[(lanes.indexOf(this.lane) + step + lanes.length) % lanes.length], cx);
       } else if (key === "escape") {
@@ -463,10 +470,19 @@ export default class OrcaCommits extends View {
     cx.notify();
   }
 
+  sectionFocused(lane, section) {
+    if (!this.handle.is_focused() || this.editing || this.lane !== lane) return false;
+    if (!section) return true;
+    const active = this.selectedSection || this.files.find(file => file.path === this.selectedFile && file.group === this.selectedGroup)?.section || "Changes";
+    return active === section;
+  }
+
   sectionTitle(label, lane, t, detail = "") {
-    return h_flex().h(28).flex_none().px(10).gap(8).items_center()
-      .border_b(1).border_color(this.lane === lane ? t.accent : t.border)
-      .text_color(this.lane === lane ? t.foreground : t.muted).text_size(11)
+    const active = this.sectionFocused(lane);
+    return h_flex().id(`heading-${lane}`).h(28).flex_none().px(10).gap(8).items_center()
+      .on_mouse_down("left", (_e, cx) => this.focusLane(lane, cx, false))
+      .border_b(2).border_color(active ? t.accent : t.border)
+      .text_color(active ? t.foreground : t.muted).text_size(11)
       .child(div().font_semibold().child(label))
       .child(div().flex_1().truncate().text_color(t.dim).child(detail));
   }
@@ -573,7 +589,10 @@ export default class OrcaCommits extends View {
   }
 
   switchMode(mode, cx) {
-    if (this.mode === mode || this.busy) return;
+    if (this.busy) return;
+    this.handle.focus();
+    this.editing = false;
+    if (this.mode === mode) { cx.notify(); return; }
     this.leaveEditor();
     this.editorError = "";
     this.mode = mode;
@@ -603,10 +622,6 @@ export default class OrcaCommits extends View {
         if (res.error) throw new Error(res.error);
         this.error = "";
         this.status = res;
-        const recentHash = this.recentCommits[this.recentCursor]?.hash;
-        this.recentCommits = res.history?.commits || [];
-        this.recentCursor = Math.max(0, this.recentCommits.findIndex(commit => commit.hash === recentHash));
-        this.recentError = res.history?.error || "";
         this.watch(res.root, cx);
         this.files = [
           ...(res.conflicts || []).map(f => ({ ...f, ...res.stats?.working?.[f.path], group: "UNSTAGED", section: "Merge Changes" })),
@@ -667,31 +682,6 @@ export default class OrcaCommits extends View {
     this.action("git-push", null, cx);
   }
 
-  viewCommit(hash, cx) {
-    if (!hash) return;
-    this.switchMode("history", cx);
-    this.select(hash, cx);
-    this.focusLane("files", cx, false);
-  }
-
-  recentHistory(t) {
-    return v_flex().size_full().min_h(0).overflow_hidden()
-      .child(h_flex().h(28).flex_none().px(10).gap(5).items_center().bg(t.raised)
-        .on_mouse_down("left", (_e, cx) => this.focusLane("recent", cx, false))
-        .child(div().flex_1().font_semibold().text_size(11).child(`Recent commits · ${this.recentCommits.length}`))
-        .child(this.tool("view-all-history", "View all", cx => this.switchMode("history", cx), t)))
-      .child(v_flex().id("recent-commits").flex_1().min_h(0).overflow_y_scroll().track_scroll(this.recentScroll)
-        .when(Boolean(this.recentError), el => el.child(div().p(8).text_color(t.blocked).child(this.recentError)))
-        .when(!this.recentError && !this.recentCommits.length, el => el.child(div().p(8).text_color(t.dim).child(this.loading ? "Loading history…" : "No commits yet")))
-        .children(this.recentCommits.map((commit, i) => h_flex().id(`recent-${commit.hash}`).h(28).flex_none().px(10).gap(8).items_center().cursor_pointer()
-          .when(this.lane === "recent" && this.recentCursor === i, el => el.bg(t.selected))
-          .hover(el => el.bg(t.hover))
-          .on_click((_e, cx) => this.viewCommit(commit.hash, cx))
-          .child(div().text_size(10).text_color(t.dim).child(commit.short))
-          .child(div().flex_1().min_w(0).truncate().child(commit.subject || "(no message)"))
-          .child(div().text_size(10).text_color(t.dim).child(commit.date)))));
-  }
-
   tool(id, label, action, t, enabled = true) {
     return div().id(id).h(24).px(7).flex().items_center().justify_center().rounded(3)
       .text_color(enabled ? t.foreground : t.dim).cursor_pointer().hover(s => s.bg(t.hover))
@@ -739,7 +729,7 @@ export default class OrcaCommits extends View {
     const canCommit = enabled && Boolean(this.message.value().trim()) && Boolean(this.status.staged?.length) && !this.status.conflicts?.length;
     const entries = this.sourceEntries();
     const id = `git-source-${this.panel ? "panel" : "dialog"}`;
-    return v_resizable(`${id}-with-history`).size_full().on_resize(sizes => this.rememberSizes(id, sizes))
+    return v_resizable(`${id}-files`).size_full().on_resize(sizes => this.rememberSizes(id, sizes))
       .child(resizable_panel().size(this.savedSize(id, 0, 130)).size_range(100).child(
         v_flex().id("commit-form").size_full().min_h(0).overflow_y_scroll().p(10).gap(8)
         .child(h_flex().gap(6).items_center()
@@ -748,7 +738,7 @@ export default class OrcaCommits extends View {
           .child(this.tool("git-push", this.busyCommand === "git-push" ? "Pushing…" : this.status.push?.needsUpstream ? "↑ Push · publish" : `↑ Push${this.status.ahead ? ` ${this.status.ahead}` : ""}`, cx => this.push(cx), t, enabled && Boolean(this.status.push?.remote) && !this.status.push?.reason))
           .when(Boolean(this.status.upstream), el => el.child(div().text_size(10).text_color(t.dim).child(`${this.status.behind || 0}↓ ${this.status.ahead || 0}↑`))))
         .when(Boolean(this.status.push?.reason), el => el.child(div().text_size(10).text_color(t.dim).child(this.status.push.reason)))
-        .child(Input.new(this.message).h(36).px(8).rounded(3).border(1).border_color(t.input).bg(t.background).text_color(t.foreground))
+        .child(Input.new(this.message).id("commit-message").h(36).px(8).rounded(3).border(1).border_color(this.editing ? t.accent : t.input).bg(t.background).text_color(t.foreground))
         .child(div().id("git-commit").h(30).flex().items_center().justify_center().rounded(3)
           .bg(canCommit ? t.accent : t.raised).text_color(canCommit ? t.accent_foreground : t.dim).cursor_pointer()
           .on_click((_e, cx) => this.commit(cx)).child(this.busyCommand === "git-commit" ? "Committing…" : "✓  Commit"))
@@ -761,6 +751,7 @@ export default class OrcaCommits extends View {
             .when(Boolean(this.collapsed[section]) || entry.count === 0, el => el.flex_none().h(28))
             .when(!this.collapsed[section] && entry.count > 0, el => el.flex_1())
             .child(h_flex().id(`group-${section}`).h(28).flex_none().px(6).gap(4).items_center().bg(this.selectedSection === section ? t.selected : t.raised).cursor_pointer()
+              .border_b(2).border_color(this.sectionFocused("files", section) ? t.accent : t.border)
               .on_click((_e, cx) => this.selectSection(section, cx))
               .child(div().id(`collapse-${section}`).w(12).text_color(t.dim).cursor_pointer()
                 .on_click((_e, cx) => { cx.stop_propagation(); this.selectSection(section, cx); this.collapsed[section] = !this.collapsed[section]; cx.notify(); })
@@ -770,8 +761,7 @@ export default class OrcaCommits extends View {
               .when(section !== "Merge Changes", el => el.child(this.tool(`all-${section}`, staged ? "−" : "+", cx => this.action(staged ? "git-unstage" : "git-stage", null, cx), t, enabled && entry.count > 0))))
             .when(!this.collapsed[section] && entry.count > 0, el => el.child(v_flex().id(`source-list-${section}`).flex_1().min_h(0).overflow_y_scroll().track_scroll(this.sourceScrolls[section])
               .children(this.files.filter(file => file.section === section).map(file => this.sourceRow(file, t, enabled)))));
-        }))))
-      .child(resizable_panel().size(this.savedSize(id, 2, 140)).size_range(70).child(this.recentHistory(t)));
+        }))));
   }
 
   sections(t) {
@@ -782,7 +772,7 @@ export default class OrcaCommits extends View {
     if (this.mode === "changes") {
       return group
         .child(resizable_panel().size(this.savedSize(id, 0, this.panel ? Math.min(340, Math.max(220, (this.height - 88) * 0.55)) : 310))
-          .size_range(this.panel ? 240 : 220).child(this.sourceControl(t)))
+          .size_range(this.panel ? 180 : 220).child(this.sourceControl(t)))
         .child(resizable_panel().size(this.savedSize(id, 1, this.panel ? Math.max(100, this.height - 428) : 650)).size_range(100).child(this.diffPane(t)));
     }
     return group
@@ -797,6 +787,7 @@ export default class OrcaCommits extends View {
     return v_flex().id("orca-commits").track_focus(this.handle).on_key_down((e, cx) => this.keyDown(e, cx))
       .on_size_change((size, cx) => { if (this.height !== size.height) { this.height = size.height; cx.notify(); } })
       .size_full().min_h(0).overflow_hidden().bg(this.panel ? t.background : t.popover).text_color(t.foreground).text_size(12)
+      .border(1).border_color(this.handle.is_focused() || this.editing ? t.accent : t.border)
       .child(h_flex().h(34).flex_none().px(10).gap(4).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().font_semibold().text_size(11).text_color(t.muted).child("CHANGES · ⌘⇧G"))
         .when(this.mode === "changes", el => el
@@ -805,7 +796,7 @@ export default class OrcaCommits extends View {
         .child(this.tool("refresh-git", "↻", cx => this.load(cx), t, !this.loading && !this.busy))
         .child(this.tool("close-commits", "×", () => this.dismiss(), t)))
       .child(h_flex().h(30).flex_none().px(6).gap(6).items_center().border_b(1).border_color(t.border)
-        .children([["changes", "Changes ["], ["history", "History ]"]].map(([mode, label]) =>
+        .children([["changes", "Changes ⌘H"], ["history", "History ⌘L"]].map(([mode, label]) =>
           div().id(`git-mode-${mode}`).h(28).px(8).flex().items_center().cursor_pointer()
             .text_color(this.mode === mode ? t.foreground : t.dim)
             .border_b(this.mode === mode ? 2 : 0).border_color(t.accent)
@@ -816,6 +807,6 @@ export default class OrcaCommits extends View {
         .child(this.error ? div().absolute().inset_0().overflow_y_scroll().p(12).text_color(t.blocked).child(this.error)
           : this.sections(t).absolute().inset_0()))
       .child(div().id("git-shortcuts").h(24).flex_none().px(10).flex().items_center().text_size(10).text_color(t.dim).border_t(1).border_color(t.border)
-        .child(this.mode === "changes" ? this.editing ? "Esc back to navigation · ⌘Enter commit" : "i message · j/k move · h/l panes · s stage/unstage · r refresh · ⌘Enter commit" : "j/k move · h/l panes · gg/G ends · Ctrl-d/u page"));
+        .child(this.mode === "changes" ? this.editing ? "⌘⇧H/L panes · Esc navigation · ⌘Enter commit" : "i message · j/k move · ⌘⇧H/L panes · s stage/unstage · r refresh · ⌘Enter commit" : "j/k move · ⌘⇧H/L panes · gg/G ends · Ctrl-d/u page"));
   }
 }

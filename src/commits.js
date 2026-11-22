@@ -177,7 +177,6 @@ function gitStatus(repo) {
     } catch { /* Stats are optional; a disappearing file will be removed on refresh. */ }
   }
   result.push = pushTarget(repo);
-  result.history = listCommits(repo, { limit: 30 });
   return result;
 }
 

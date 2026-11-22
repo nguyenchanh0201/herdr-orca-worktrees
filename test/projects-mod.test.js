@@ -20,21 +20,32 @@ function element(kind, path) {
   return proxy;
 }
 
-async function harness(respond = () => ({}), overlayProps = null) {
+async function harness(respond = () => ({}), overlayProps = null, stored = {}) {
   const state = { shared: new Map(), calls: [], runs: [], storageSets: [], scrolls: [], spaces: [], agents: [], checking: false, notices: 0, notifications: [], overlays: [], inputs: [] };
   const pending = [];
-  const cx = { notify() { state.notices++; }, stop_propagation() {}, focus_handle: () => ({ focus() {} }), spawn(fn) { pending.push(Promise.resolve().then(() => fn(cx))); }, timer: { every() {} } };
+  const commandTasks = new Set();
+  let currentTask, deliverCommand;
+  state.focused = false;
+  const cx = { notify() { state.notices++; }, stop_propagation() {}, focus_handle: () => ({ focus() { state.focused = true; }, is_focused: () => state.focused }), spawn(fn) {
+    let task;
+    task = Promise.resolve().then(() => { currentTask = task; try { return fn(cx); } finally { currentTask = null; } });
+    pending.push(task);
+  }, timer: { every() {} } };
   const context = {
     ...await import('../mods/projects/group.js'),
     ...await import('../mods/projects/sleep.js'),
     ...await import('../mods/projects/sidebar.js'),
     View: class {}, div: () => element('div'), svg: p => element('svg', p), image: p => element('image', p),
     h_flex: () => element('h_flex'), v_flex: () => element('v_flex'),
-    ScrollHandle: { new: () => ({ scroll_to_item(i) { state.scrolls.push(i); } }) },
-    localStorage: { getItem: () => null, setItem(k, v) { state.storageSets.push([k, v]); } },
+    ScrollHandle: { new: () => {
+      if (state.rendering) throw new Error('ScrollHandle.new cannot run during render');
+      return { scroll_to_item(i) { state.scrolls.push(i); } };
+    } },
+    localStorage: { getItem: key => stored[key] ?? null, setItem(k, v) { state.storageSets.push([k, v]); } },
     shared: key => state.shared.get(key), setShared: (k, v) => state.shared.set(k, v),
     spaces: () => state.spaces, panes: () => [], agents: () => state.agents, machines: () => [{ name: null, layout: 'ready' }],
-    checking: () => state.checking, layout: () => null, knownAgents: async () => [],
+    nextCommand: () => { commandTasks.add(currentTask); return new Promise(resolve => { deliverCommand = resolve; }); },
+    checking: () => state.checking, layout: () => state.layout ?? null, knownAgents: async () => [],
     run(cmd, args) { state.runs.push({ cmd, args }); }, openOverlay(spec) { state.overlays.push({ open: JSON.parse(JSON.stringify(spec)) }); }, closeOverlay(id) { state.overlays.push({ close: id }); },
     props: () => overlayProps, notify(n) { state.notifications.push(n); }, setAgentOrder() {}, pickFolder: async () => '/new',
     InputState: { new(options = {}) {
@@ -45,7 +56,7 @@ async function harness(respond = () => ({}), overlayProps = null) {
     Input: { new: input => element('Input', input) },
     theme: () => ({
       blocked: 'c-blocked', working: 'c-working', done: 'c-done', idle: 'c-idle', unknown: 'c-unknown',
-      selected: 'c-selected', hover: 'c-hover', border: 'c-border', muted: 'c-muted', dim: 'c-dim',
+      accent: 'c-accent', selected: 'c-selected', hover: 'c-hover', border: 'c-border', muted: 'c-muted', dim: 'c-dim',
       foreground: 'c-fg', chrome: 'c-chrome',
     }), home: () => '/home', appHome: () => '/app', readTextFile: async () => null,
     config: { node: 'node', cli: 'cli' },
@@ -60,7 +71,18 @@ async function harness(respond = () => ({}), overlayProps = null) {
   vm.runInNewContext(`${source}\nthis.Mod = ${className};`, context);
   const view = new context.Mod();
   view.init({}, cx);
-  return { view, cx, state, async flush() { while (pending.length) await Promise.all(pending.splice(0)); } };
+  const render = view.render.bind(view);
+  view.render = (...args) => {
+    state.rendering = true;
+    try { return render(...args); } finally { state.rendering = false; }
+  };
+  return { view, cx, state,
+    async command(value) { deliverCommand(value); await new Promise(setImmediate); },
+    async flush() {
+      await Promise.resolve();
+      while (pending.length) { await Promise.all(pending.splice(0).filter(task => !commandTasks.has(task))); await Promise.resolve(); }
+    },
+  };
 }
 
 function nodes(tree) {
@@ -366,7 +388,7 @@ test('clicking the strip unfolds and remembers it', async () => {
 
 test('agent row click focuses its pane', async () => {
   const h = await cardHarness();
-  h.view.agentsOpen.add('/r');
+  h.view.toggleAgents('/r', h.cx);
   const tree = h.view.render();
   const row = nodes(tree).find((n) => n.attrs.on_click && texts(n).includes('Done - Claude'));
   assert.ok(row);
@@ -447,7 +469,7 @@ test('unknown or missing agent status falls back to idle glyph in unknown color'
   const stripGlyph = strip.kids.find((n) => texts(n).includes('○'));
   assert.equal(stripGlyph?.attrs.text_color, 'c-unknown');
 
-  h.view.agentsOpen.add('/r');
+  h.view.toggleAgents('/r', h.cx);
   tree = h.view.render();
   assert.ok(texts(tree).includes('Weird - Claude'));
   assert.ok(texts(tree).includes('Unknown - Codex'));
@@ -786,4 +808,206 @@ test('new worktree starts its agent with the full-access flag', async () => {
   await h.flush();
   const created = h.state.runs.find(r => r.cmd === 'space.new');
   assert.deepEqual(Array.from(created.args.argv), ['codex', '--dangerously-bypass-approvals-and-sandbox', '--no-daemon']);
+});
+
+
+test('Projects accepts pane focus and draws a focused sidebar border', async () => {
+  const h = await harness();
+  await h.flush();
+  assert.equal(h.state.focused, false);
+  assert.equal(h.view.render().attrs.border_color, '#00000000');
+  await h.command('focus');
+  assert.equal(h.state.focused, true);
+  const tree = h.view.render();
+  assert.equal(tree.attrs.id, 'projects');
+  assert.equal(tree.attrs.track_focus, h.view.handle);
+  assert.equal(tree.attrs.border_color, 'c-accent');
+  h.state.focused = false;
+  assert.equal(h.view.render().attrs.border_color, '#00000000');
+  const metadata = JSON.parse(fs.readFileSync(require('node:path').join(__dirname, '../mods/projects/mod.json'), 'utf8'));
+  assert.equal(metadata.focusable, true);
+});
+
+async function navigationHarness() {
+  const h = await harness();
+  await h.flush();
+  h.view.startedAt = 0;
+  h.state.spaces = [
+    {id: 's1', folder: '/one', branch: 'main', active: true, name: 'one', tabs: []},
+    {id: 's2', folder: '/two', branch: 'feature', active: false, name: 'two', tabs: []},
+  ];
+  h.view.saved = [{path: '/one', name: 'One', exists: true}, {path: '/two', name: 'Two', exists: true}];
+  h.view.repo.set('/one', {primary: '/one', linked: false});
+  h.view.repo.set('/two', {primary: '/two', linked: false});
+  h.view.render();
+  await h.command('focus');
+  return h;
+}
+
+test('Projects j/k move in visible order, highlight and scroll the cursor, and Enter opens the worktree', async () => {
+  const h = await navigationHarness();
+  assert.equal(h.view.navKey, 'worktree:s1');
+  await h.command('next');
+  assert.equal(h.view.navKey, h.view.navigation[2].key);
+  await h.command('next');
+  assert.equal(h.view.navKey, 'worktree:s2');
+  const tree = h.view.render();
+  const card = nodes(tree).find(node => node.attrs.id === 'card-s2');
+  assert.equal(card.attrs.border_color, 'c-accent');
+  assert.equal(h.state.scrolls.at(-1), h.view.navigation[3].index);
+  assert.equal(h.state.runs.length, 0);
+  await h.command('open');
+  assert.equal(h.state.runs.at(-1).cmd, 'space.select');
+  assert.equal(h.state.runs.at(-1).args.id, 's2');
+  await h.command('previous');
+  assert.equal(h.view.navKey, h.view.navigation[2].key);
+});
+
+test('Projects h/l fold project groups and navigate parent and child entries', async () => {
+  const h = await navigationHarness();
+  await h.command('next');
+  const project = h.view.navigation[2];
+  await h.command('collapse');
+  assert.equal(h.view.collapsed.has(project.collapseKey), true);
+  h.view.render();
+  assert.equal(h.view.navigation.some(entry => entry.key === 'worktree:s2'), false);
+  await h.command('expand');
+  assert.equal(h.view.collapsed.has(project.collapseKey), false);
+  h.view.render();
+  await h.command('expand');
+  assert.equal(h.view.navKey, 'worktree:s2');
+  await h.command('collapse');
+  assert.equal(h.view.navKey, project.key);
+  assert.ok(h.state.storageSets.some(([key]) => key === 'projects.collapsed'));
+});
+
+test('Projects supports Vim ends and counts, and leaves modified pane shortcuts untouched', async () => {
+  const h = await navigationHarness();
+  const key = (key, modifiers = {}) => h.view.keyDown({key, modifiers}, h.cx);
+  key('g'); key('g');
+  assert.equal(h.view.navKey, h.view.navigation[0].key);
+  key('2'); key('j');
+  assert.equal(h.view.navKey, h.view.navigation[2].key);
+  key('g', {shift: true});
+  assert.equal(h.view.navKey, h.view.navigation.at(-1).key);
+  const selected = h.view.navKey;
+  key('h', {platform: true, shift: true});
+  key('l', {platform: true, shift: true});
+  assert.equal(h.view.navKey, selected);
+  assert.equal(h.state.runs.length, 0);
+  key('escape');
+  assert.equal(h.state.runs.at(-1).cmd, 'pane.go');
+  assert.equal(h.state.runs.at(-1).args.direction, 'right');
+});
+
+test('Projects navigation follows named groups and reselects safely when rows disappear', async () => {
+  const h = await navigationHarness();
+  h.view.saved = h.view.saved.map(project => ({...project, group: 'Work'}));
+  h.view.render();
+  await h.command('first');
+  const group = h.view.navigation[0];
+  assert.ok(group.key.startsWith('group:'));
+  await h.command('expand');
+  assert.equal(h.view.navigation.find(entry => entry.key === h.view.navKey).parent, group.key);
+  h.view.selectNavigation('worktree:s2', h.cx);
+  h.state.spaces = h.state.spaces.filter(space => space.id !== 's2');
+  h.view.saved = h.view.saved.filter(project => project.path !== '/two');
+  h.view.render();
+  assert.equal(h.view.navKey, 'worktree:s1');
+});
+
+test('Projects Activity view also supports selecting agents with j/k and Enter', async () => {
+  const h = await navigationHarness();
+  h.view.view = 'activity';
+  h.state.agents = [
+    {address: 'a1', space: 's1', pane: 'p1', status: 'idle', program: {name: 'Codex'}},
+    {address: 'a2', space: 's2', pane: 'p2', status: 'idle', program: {name: 'Claude'}},
+  ];
+  h.view.render();
+  await h.command('first');
+  await h.command('next');
+  assert.equal(h.view.navKey, 'agent:a2');
+  await h.command('open');
+  assert.equal(h.state.runs.at(-1).cmd, 'pane.focus');
+  assert.equal(h.state.runs.at(-1).args.pane, 'p2');
+});
+
+test('worktree agents expand with l and participate in j/k navigation and Enter focus', async () => {
+  const h = await cardHarness();
+  h.view.render();
+  await h.command('focus');
+  assert.equal(h.view.navKey, 'worktree:s1');
+  await h.command('expand');
+  assert.equal(h.view.agentsOpen.has('/r'), true);
+  h.view.render();
+  assert.deepEqual(Array.from(h.view.navigation.filter(entry => entry.agent), entry => entry.key), ['agent:a1', 'agent:a2']);
+  await h.command('next');
+  assert.equal(h.view.navKey, 'agent:a1');
+  let tree = h.view.render();
+  assert.equal(nodes(tree).find(node => node.attrs.id === 'agent-a1').attrs.border_color, 'c-accent');
+  await h.command('next');
+  assert.equal(h.view.navKey, 'agent:a2');
+  await h.command('open');
+  assert.equal(h.state.runs.at(-1).cmd, 'pane.focus');
+  assert.equal(h.state.runs.at(-1).args.pane, 'p2');
+  await h.command('collapse');
+  assert.equal(h.view.navKey, 'worktree:s1');
+  await h.command('collapse');
+  assert.equal(h.view.agentsOpen.has('/r'), false);
+  h.view.render();
+  assert.equal(h.view.navigation.some(entry => entry.agent), false);
+});
+
+test('nested agents retain their own mouse cursor selection and scroll handles', async () => {
+  const h = await cardHarness();
+  h.view.toggleAgents('/r', h.cx);
+  const tree = h.view.render();
+  const agent = nodes(tree).find(node => node.attrs.id === 'agent-a2');
+  let stopped = false;
+  agent.attrs.on_mouse_down[1]({}, {...h.cx, stop_propagation() { stopped = true; }});
+  assert.equal(stopped, true);
+  assert.equal(h.view.navKey, 'agent:a2');
+  const entry = h.view.navigation.find(item => item.key === 'agent:a2');
+  assert.equal(entry.parent, 'worktree:s1');
+  assert.equal(entry.agentIndex, 1);
+  assert.ok(entry.agentScroll);
+  assert.equal(h.state.scrolls.at(-1), 1);
+});
+
+
+test('Projects Vim motions and Tab stay inside Projects at the list boundaries', async () => {
+  const h = await cardHarness();
+  h.state.layout = {id: 'root', children: [{id: 'agents', content: {mod: 'orca-agents'}}]};
+  h.view.render();
+  await h.command('last');
+  const last = h.view.navKey;
+  await h.command('next');
+  assert.equal(h.view.navKey, last);
+  await h.command('first');
+  const first = h.view.navKey;
+  await h.command('previous');
+  await h.command('collapse');
+  h.view.keyDown({key: 'tab'}, h.cx);
+  assert.equal(h.view.navKey, first);
+  assert.equal(h.state.runs.length, 0);
+});
+
+test('long expanded worktree agent lists reveal the selected agent in their own scroll area', async () => {
+  const h = await cardHarness();
+  h.state.agents = Array.from({length: 10}, (_, i) => ({address: `a${i}`, space: 's1', pane: `p${i}`, status: 'idle', program: {name: 'Codex'}}));
+  h.view.toggleAgents('/r', h.cx);
+  const tree = h.view.render();
+  assert.equal(nodes(tree).find(node => node.attrs.id === 'agents-list-s1').attrs.h, 168);
+  await h.command('last');
+  assert.equal(h.view.navKey, 'agent:a9');
+  assert.equal(h.state.scrolls.at(-1), 9);
+});
+
+
+test('restored expanded agent lists allocate scroll handles before the first render', async () => {
+  const h = await harness(undefined, null, {'projects.agentsOpen': JSON.stringify(['/r'])});
+  await h.flush();
+  assert.equal(h.view.agentsOpen.has('/r'), true);
+  assert.ok(h.view.agentScrolls.get('/r'));
+  assert.doesNotThrow(() => h.view.render());
 });

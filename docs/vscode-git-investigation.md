@@ -49,11 +49,11 @@ Local file watching refreshes the selected worktree automatically, coalesces eve
 This version explicitly supports local workspaces. Remote contexts are detected before loading or mutating Git and show a limitation instead of using local paths. Commit continues to use the index only; no implicit stage-all behavior is carried over from the shipped Changes panel.
 
 
-## Push and inline recent history
+## Push and History
 
 The commit form now includes **↑ Push**, with ahead counts when tracked. A new branch displays **Push · publish** and sets an upstream on success. The destination follows the configured push remote or upstream; otherwise origin or a sole remote is selected. Ambiguous remotes, detached HEAD and unborn branches give explicit reasons. An explicit branch refspec prevents broad configured push refspecs from publishing other branches. Push runs with a bounded timeout and noninteractive Git credential prompting; errors remain visible, and user drafts are preserved. It never implicitly stages or commits. Tests use local bare remotes for initial publication, differently named upstreams and rejected updates.
 
-The Changes view includes a resizable **Recent commits** section below the working groups. It lists the latest 30 commits and refreshes with status. Clicking a commit opens its files and diff in the full history view; keyboard users can Tab to the list, move with j/k and press Enter. View all opens the existing 100-commit browser. The section reports empty repositories and history errors. Existing section size values are retained, with a new saved size for the history section.
+Commit history is available through the **History** tab (`⌘L`). The duplicate inline Recent commits list has been removed from Changes, returning its space to file groups and the diff. Status refresh no longer fetches a separate commit log, and Tab in Changes cycles only between files and diff. The existing commit-form and file-list size preferences remain in use; the retired third section size is ignored.
 
 ## Content viewport sizing
 

@@ -1,7 +1,8 @@
 const fs = require("node:fs");
+const path = require("node:path");
 
 // Upgrade the saved Orca layout without replacing its custom panes or sizing.
-function enableGitPanel(layout) {
+function enableGitPanel(layout, { agents = false } = {}) {
   function find(node, id) {
     if (node.id === id) return node;
     for (const child of node.children || []) {
@@ -12,6 +13,11 @@ function enableGitPanel(layout) {
   const body = find(layout, "panel-body");
   if (body?.type !== "stack" || !Array.isArray(body.children)) return false;
   let changed = false;
+  const agentPanel = find(layout, "agents");
+  if (agents && agentPanel?.content?.mod === "agents") {
+    agentPanel.content = { ...agentPanel.content, mod: "orca-agents" };
+    changed = true;
+  }
   const changes = body.children.find(child => child.id === "changes");
   const git = body.children.find(child => child.id === "git" && child.content?.mod === "orca-commits");
   if (!changes) {
@@ -37,11 +43,12 @@ function enableGitPanel(layout) {
 if (require.main === module) {
   const file = process.argv[2];
   const layout = JSON.parse(fs.readFileSync(file, "utf8"));
-  if (enableGitPanel(layout)) {
+  const agentsInstalled = fs.existsSync(path.join(path.dirname(file), "..", "mods", "orca-agents", "mod.json"));
+  if (enableGitPanel(layout, { agents: agentsInstalled })) {
     fs.copyFileSync(file, `${file}.before-git`);
     fs.writeFileSync(`${file}.tmp`, JSON.stringify(layout, null, 2) + "\n");
     fs.renameSync(`${file}.tmp`, file);
-    console.log("merged Git into Changes in your Orca layout (backup: orca.json.before-git)");
+    console.log("updated Orca panels and navigation (backup: orca.json.before-git)");
   }
   const keysFile = process.argv[3];
   if (keysFile) {
@@ -56,11 +63,28 @@ if (require.main === module) {
 
 function enableChangesShortcut(keys) {
   const section = keys["layout:orca"] ||= {};
-  if (section["cmd-shift-g"] === "orca-tabs.changes") return false;
+  let changed = false;
   // Preserve an explicitly customized Orca shortcut.
-  if (section["cmd-shift-g"]) return false;
-  section["cmd-shift-g"] = "orca-tabs.changes";
-  return true;
+  if (!section["cmd-shift-g"]) {
+    section["cmd-shift-g"] = "orca-tabs.changes";
+    changed = true;
+  }
+  for (const [key, command] of [["cmd-shift-h", "pane.go:left"], ["cmd-shift-j", "pane.go:down"], ["cmd-shift-k", "pane.go:up"], ["cmd-shift-l", "pane.go:right"]]) {
+    if (section[key] === command) continue;
+    section[key] = command;
+    changed = true;
+  }
+  const panel = keys["mod:orca-commits"] ||= {};
+  if (panel["cmd-k"] === "orca-commits.history") {
+    delete panel["cmd-k"];
+    changed = true;
+  }
+  for (const [key, command] of [["cmd-h", "orca-commits.changes"], ["cmd-l", "orca-commits.history"], ["cmd-shift-h", "orca-commits.back"], ["cmd-shift-l", "orca-commits.forward"]]) {
+    if (panel[key] === command) continue;
+    panel[key] = command;
+    changed = true;
+  }
+  return changed;
 }
 
 module.exports = { enableGitPanel, enableChangesShortcut };

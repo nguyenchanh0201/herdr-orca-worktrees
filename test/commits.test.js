@@ -366,11 +366,10 @@ test("Push explains missing or ambiguous remotes, detached HEAD, and unborn bran
   const empty = path.join(fx.primary, "..", "empty");
   git(fx.primary, ["init", empty]);
   assert.match(gitPush(empty).error, /Create a commit/);
-  assert.deepEqual(gitStatus(empty).history.commits, []);
+  assert.deepEqual(listCommits(empty).commits, []);
 });
 
-test("Changes status includes recent commits below the working groups", () => {
-  const status = gitStatus(fx.primary);
-  assert.equal(status.history.commits[0].subject, "init");
-  assert.equal(status.history.commits[0].hash, git(fx.primary, ["rev-parse", "HEAD"]));
+test("Changes status leaves history loading to the History tab", () => {
+  assert.equal(gitStatus(fx.primary).history, undefined);
+  assert.equal(listCommits(fx.primary).commits[0].subject, "init");
 });

@@ -14,11 +14,28 @@ function panelHarness(mode = "history", saved = new Map()) {
   let nvimError;
   let tab = "tab1";
   let pane = "pane1";
+  let deliverCommand;
+  let panelFocused = true;
+  const colors = {border: "border", accent: "accent", foreground: "foreground", muted: "muted", dim: "dim", raised: "raised", background: "background"};
+  function element(type) {
+    const node = {type, items: [], styles: {}};
+    const proxy = new Proxy(node, {get(target, key) {
+      if (key in target) return target[key];
+      if (key === "when") return (condition, fn) => condition ? fn(proxy) : proxy;
+      if (key === "child") return child => { node.items.push(child); return proxy; };
+      if (key === "children") return children => { node.items.push(...children); return proxy; };
+      return (...args) => { node.styles[key] = args[0] ?? true; return proxy; };
+    }});
+    return proxy;
+  }
   const context = vm.createContext({
+    div: () => element("div"), h_flex: () => element("row"), v_flex: () => element("column"), svg: () => element("svg"),
+    h_resizable: () => element("resize-row"), v_resizable: () => element("resize-column"), resizable_panel: () => element("resize-panel"),
+    Input: {new: () => element("input")}, theme: () => colors,
     View: class {}, checking: () => false, props: () => ({ mode }),
     focused: () => ({ cwd: folder, tab, pane }), spaces: () => [{ active: true, folder, machine }], panes: () => [],
     exec: async () => { if (nvimError) throw new Error(nvimError); return { code: 0 }; },
-    nextCommand: () => new Promise(() => {}),
+    nextCommand: () => new Promise(resolve => { deliverCommand = resolve; }),
     watchFolder: root => {
       let resolve;
       const promise = new Promise(r => { resolve = r; });
@@ -41,14 +58,16 @@ function panelHarness(mode = "history", saved = new Map()) {
   const view = new context.Mod();
   view.cli = args => new Promise(resolve => pending.push({ args, resolve }));
   const cx = {
-    focus_handle: () => ({ focus() {} }), notify() {}, stop_propagation() {}, timer: { every() {} },
+    focus_handle: () => ({ focus() { panelFocused = true; }, is_focused: () => panelFocused }), notify() {}, stop_propagation() {}, timer: { every() {} },
     spawn(fn) { fn(cx); },
   };
   view.init({}, cx);
   return {
+    colors, setPanelFocus(value) { panelFocused = value; },
     watches, setMachine(value) { machine = value; },
     commands, failNvim(error) { nvimError = error; }, setTab(value) { tab = value; }, setPane(value) { pane = value; },
     view, cx, pending, handles, rows: context.diffRows, setFolder(value) { folder = value; },
+    async command(value) { deliverCommand(value); await new Promise(setImmediate); },
     async resolve(index, result) { pending[index].resolve(result); await new Promise(setImmediate); },
     key(key, modifiers = {}) { view.keyDown({ key, modifiers, keystroke: modifiers.control ? `ctrl-${key}` : key }, cx); },
   };
@@ -492,6 +511,12 @@ test("Changes shortcut is scoped to Orca and preserves customized bindings", () 
   assert.equal(enableChangesShortcut(keys), true);
   assert.equal(keys["layout:orca"]["cmd-shift-g"], "orca-tabs.changes");
   assert.equal(keys.global["cmd-shift-g"], "other.command");
+  assert.equal(keys["mod:orca-commits"]["cmd-h"], "orca-commits.changes");
+  assert.equal(keys["mod:orca-commits"]["cmd-l"], "orca-commits.history");
+  keys["mod:orca-commits"]["cmd-k"] = "orca-commits.history";
+  assert.equal(enableChangesShortcut(keys), true);
+  assert.equal(keys["mod:orca-commits"]["cmd-k"], undefined);
+  assert.equal(keys.global["cmd-h"], undefined);
   assert.equal(enableChangesShortcut(keys), false);
   keys["layout:orca"]["cmd-shift-g"] = "my.command";
   assert.equal(enableChangesShortcut(keys), false);
@@ -547,7 +572,7 @@ test("status supplies separate staged and working line counts and large previews
 
 test("Push is serialized, preserves the commit draft, shows failures, and refreshes after success", async () => {
   const h = panelHarness("changes");
-  await h.resolve(0, {push: {remote: "origin", needsUpstream: true}, history: {commits: [{hash: "a", subject: "First"}]}});
+  await h.resolve(0, {push: {remote: "origin", needsUpstream: true}});
   h.view.message.set_value("draft");
   h.view.push(h.cx);
   h.view.push(h.cx);
@@ -572,57 +597,124 @@ test("unavailable Push targets cannot trigger a Git operation", async () => {
   assert.equal(h.pending.length, 1);
 });
 
-test("recent commits load in Changes and keyboard selection opens commit details", async () => {
-  const h = panelHarness("changes");
-  await h.resolve(0, {history: {commits: [{hash: "first", subject: "First"}, {hash: "second", subject: "Second"}]}});
-  assert.equal(h.view.recentCommits.length, 2);
-  h.key("tab"); h.key("tab");
-  assert.equal(h.view.lane, "recent");
-  h.key("j");
-  assert.equal(h.view.recentCursor, 1);
-  h.key("s");
-  assert.equal(h.pending.length, 1);
-  h.key("enter");
-  assert.equal(h.view.mode, "history");
-  assert.equal(h.view.selected, "second");
-  assert.deepEqual(Array.from(h.pending[2].args), ["commit-files", "/first", "second"]);
-  await h.resolve(1, {commits: [{hash: "first"}, {hash: "second"}]});
-  assert.equal(h.view.selected, "second");
-  assert.equal(h.view.lane, "files");
-});
-
-test("recent commit history is cleared when changing worktrees", async () => {
-  const h = panelHarness("changes");
-  await h.resolve(0, {history: {commits: [{hash: "first"}]}});
-  h.setFolder("/second"); h.view.syncFolder(h.cx);
-  assert.equal(h.view.recentCommits.length, 0);
-  await h.resolve(1, {history: {error: "Could not read history"}});
-  assert.match(h.view.recentError, /Could not read/);
-});
-
-test("brackets switch the top Changes and History tabs from any navigation section", async () => {
+test("panel commands switch Changes and History from any section and preserve drafts", async () => {
   const h = panelHarness("changes");
   await h.resolve(0, {changes: []});
   h.view.message.set_value("keep this draft");
-  for (const lane of ["files", "diff", "recent"]) {
+  for (const lane of ["files", "diff"]) {
     h.view.lane = lane;
-    h.key("]");
+    await h.command("history");
     assert.equal(h.view.mode, "history");
     assert.equal(h.view.lane, "commits");
-    h.key("[");
+    await h.command("changes");
     assert.equal(h.view.mode, "changes");
     assert.equal(h.view.lane, "files");
   }
   assert.equal(h.view.message.value(), "keep this draft");
-  const requests = h.pending.length;
   h.view.editing = true;
-  h.key("]");
+  await h.command("history");
+  assert.equal(h.view.mode, "history");
+  assert.equal(h.view.editing, false);
+  await h.command("changes");
+  const afterSwitch = h.pending.length;
   h.view.editing = false;
   h.key("]", {platform: true});
   h.key("]", {control: true});
   h.key("]", {alt: true});
   h.view.busy = true;
-  h.key("]");
+  await h.command("history");
   assert.equal(h.view.mode, "changes");
-  assert.equal(h.pending.length, requests);
+  assert.equal(h.pending.length, afterSwitch);
+});
+
+
+test("Changes renders an active panel outline and a focus line on the selected file group", async () => {
+  const h = panelHarness("changes");
+  await h.resolve(0, {staged: [{path: "a"}], changes: [{path: "b"}]});
+  function find(node, id) {
+    if (node?.styles?.id === id) return node;
+    for (const child of node?.items || []) { const found = find(child, id); if (found) return found; }
+  }
+  let tree = h.view.render(h.cx);
+  assert.equal(tree.styles.border_color, "accent");
+  assert.equal(find(tree, "group-Changes").styles.border_color, "accent");
+  assert.equal(find(tree, "group-Staged Changes").styles.border_color, "border");
+  h.view.selectSection("Staged Changes", h.cx);
+  tree = h.view.render(h.cx);
+  assert.equal(find(tree, "group-Staged Changes").styles.border_color, "accent");
+  assert.equal(find(tree, "group-Changes").styles.border_color, "border");
+  h.view.focusLane("diff", h.cx, false);
+  tree = h.view.render(h.cx);
+  assert.equal(find(tree, "group-Staged Changes").styles.border_color, "border");
+  assert.equal(find(tree, "heading-diff").styles.border_color, "accent");
+  h.setPanelFocus(false);
+  tree = h.view.render(h.cx);
+  assert.equal(tree.styles.border_color, "border");
+  assert.equal(find(tree, "heading-diff").styles.border_color, "border");
+  h.view.editing = true;
+  tree = h.view.render(h.cx);
+  assert.equal(tree.styles.border_color, "accent");
+  assert.equal(find(tree, "commit-message").styles.border_color, "accent");
+});
+
+
+test("Changes shows only the commit form and file groups and Tab cycles between files and diff", async () => {
+  const h = panelHarness("changes");
+  await h.resolve(0, {changes: [{path: "a"}]});
+  const source = h.view.sourceControl(h.colors);
+  assert.equal(source.items.length, 2);
+  h.key("tab");
+  assert.equal(h.view.lane, "diff");
+  h.key("tab");
+  assert.equal(h.view.lane, "files");
+  await h.command("history");
+  assert.equal(h.view.mode, "history");
+  assert.equal(h.pending.at(-1).args[0], "commits");
+});
+
+
+test("pane shortcuts use Cmd Shift H/L while preserving tab shortcuts and unrelated bindings", () => {
+  const keys = {global: {"cmd-shift-l": "layout.switch", "cmd-h": "app.hide"}, terminal: {"cmd-c": "terminal.copy"}};
+  enableChangesShortcut(keys);
+  assert.equal(keys["layout:orca"]["cmd-shift-h"], "pane.go:left");
+  assert.equal(keys["layout:orca"]["cmd-shift-j"], "pane.go:down");
+  assert.equal(keys["layout:orca"]["cmd-shift-k"], "pane.go:up");
+  assert.equal(keys["layout:orca"]["cmd-shift-l"], "pane.go:right");
+  assert.equal(keys["mod:orca-commits"]["cmd-shift-h"], "orca-commits.back");
+  assert.equal(keys["mod:orca-commits"]["cmd-shift-l"], "orca-commits.forward");
+  assert.equal(keys["mod:orca-commits"]["cmd-h"], "orca-commits.changes");
+  assert.equal(keys["mod:orca-commits"]["cmd-l"], "orca-commits.history");
+  assert.equal(keys.global["cmd-shift-l"], "layout.switch");
+  assert.equal(keys.global["cmd-h"], "app.hide");
+  assert.equal(keys.terminal["cmd-c"], "terminal.copy");
+  assert.equal(enableChangesShortcut(keys), false);
+});
+
+test("pane navigation crosses Changes sections and exits the panel at either edge", async () => {
+  const h = panelHarness("changes");
+  await h.resolve(0, {changes: [{path: "a"}]});
+  h.view.selectSection("Changes", h.cx);
+  await h.command("forward");
+  assert.equal(h.view.lane, "diff");
+  await h.command("forward");
+  assert.equal(h.commands.at(-1).command, "pane.go");
+  assert.equal(h.commands.at(-1).args.direction, "right");
+  await h.command("back");
+  assert.equal(h.view.lane, "files");
+  await h.command("back");
+  assert.equal(h.commands.at(-1).args.direction, "left");
+  h.view.message.set_value("draft stays");
+  h.view.editing = true;
+  await h.command("forward");
+  assert.equal(h.view.editing, false);
+  assert.equal(h.view.lane, "files");
+  assert.equal(h.view.message.value(), "draft stays");
+  await h.command("history");
+  await h.command("forward");
+  assert.equal(h.view.lane, "files");
+  await h.command("forward");
+  assert.equal(h.view.lane, "diff");
+  await h.command("back");
+  await h.command("back");
+  assert.equal(h.view.lane, "commits");
 });
