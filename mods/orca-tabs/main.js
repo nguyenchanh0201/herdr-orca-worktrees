@@ -1,4 +1,4 @@
-// Copied from Herdr 0.1.16 mods/tabs. Only change: the ORCA-TOGGLE block. Re-copy on Herdr updates.
+// Copied from Herdr 0.1.16 mods/tabs. Changes: ORCA-TOGGLE and ORCA-GIT blocks. Re-copy on Herdr updates.
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
@@ -130,7 +130,10 @@ export default class Tabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    const enabled = shared("workspace.panels") ?? ["files", "changes"];
+    let enabled = shared("workspace.panels") ?? ["files", "changes"];
+    // ORCA-GIT start
+    if (body?.children?.some(child => child.id === "git")) enabled = [...enabled, "git"];
+    // ORCA-GIT end
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;
@@ -140,6 +143,9 @@ export default class Tabs extends View {
         .on_click(() => {
           if (on) run("layout.hide", { id: "panel" });
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
+          // ORCA-GIT start
+          if (!on && id === "git") run("orca-commits.focus");
+          // ORCA-GIT end
         }).child(svg(icon).size(14)).child(label);
     };
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
@@ -171,6 +177,9 @@ export default class Tabs extends View {
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
+      // ORCA-GIT start
+      .when(enabled.includes("git"), el => el.child(panelButton("git", "Git", "mods/changes/changes.svg")))
+      // ORCA-GIT end
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/orca-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/orca-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/orca-tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

@@ -137,6 +137,13 @@
                               "content": {
                                 "mod": "changes"
                               }
+                            },
+                            {
+                              "id": "git",
+                              "type": "block",
+                              "content": {
+                                "mod": "orca-commits"
+                              }
                             }
                           ],
                           "active": "files"

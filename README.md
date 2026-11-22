@@ -47,6 +47,8 @@ It samples `ps` every 2 seconds while open and every 5 seconds otherwise, and it
 
 - **Create worktree** dialog, with a local and remote branch picker and `orca.yaml` setup scripts.
 - **Remove worktree** dialog, with archive handling.
+- **Git panel:** click **Git** beside **Files** and **Changes** for a VS Code style Source Control view of the selected worktree. Enter a commit message, stage (`+`) or unstage (`−`) individual files or entire groups, then commit the staged changes. The **Staged Changes** and **Changes** group titles remain visible with file counts, including when empty. Select a title by clicking it or using `j/k`, then press `s` to stage all Changes or unstage all Staged Changes. The title’s `+`/`−` buttons do the same; click its chevron to collapse the group. Merge conflicts appear separately; new files appear under Changes. Selecting a file shows the staged or working version with old/new line numbers. Branch and ahead/behind counts appear above the message. **Open in Neovim** opens the selected working file in a terminal pane beside the current pane (or a new tab if no pane exists). Neovim must be available as `nvim` on PATH. Use `:w` to save and `:q` to close its pane, then `r` or `↻` to refresh Git immediately. Staged selections open the working file; saving does not stage it. Commit drafts are remembered per worktree while the panel stays open; failed commits preserve the message. **History** retains the latest 100 commits, their changed files, and per-file diffs (merges compare to their first parent). The panel refreshes every 10 seconds; `↻` refreshes immediately. Drag the dividers to resize the commit form, file list, and diff; History sections resize too. Sizes are saved across refreshes, mode switches, and app restarts. **Commits…** in a worktree's right-click menu opens a wider dialog with the same views. See [VS Code Git investigation](docs/vscode-git-investigation.md) for reference evidence and scope.
+- **Vim navigation in Git:** click inside the panel, then use `j/k` to move through commits, files, or diff lines; `h/l` to move between sections; `gg/G` for first/last; and `Ctrl-d/u` to move half a page in the diff. Counts such as `5j` work. In Changes, `i` focuses the commit message, `Esc` returns to navigation, `s` stages the selected working file or unstages the selected staged file, `r` refreshes and `⌘Enter` in the message commits staged files. Typing in the message field bypasses Vim navigation. Arrow keys, Enter, and Tab/Shift-Tab also navigate. Escape returns to the previous section, then to the terminal; `q` closes Git.
 - Orca-style tabs.
 
 ## Requirements
@@ -70,7 +72,7 @@ That's all. The script:
 
 1. Installs the CLI's npm dependency (`yaml`) if it's missing.
 2. Copies every mod in `mods/` to `~/.config/herdr-app/mods/`. It writes each mod a `config.js` holding the paths of your `node` and of `bin/orca-wt.js`.
-3. Copies `layouts/orca.json` to `~/.config/herdr-app/layouts/` if you don't have one, and **never overwrites** an existing one.
+3. Copies `layouts/orca.json` to `~/.config/herdr-app/layouts/` if you don't have one. For an existing Orca layout with the standard panel stack, it adds Git and enables the Orca tab bar, preserving customizations and saving `orca.json.before-git` as a backup.
 4. Runs `herdr-app check` on every mod.
 5. Switches the open Herdr window to the `orca` layout, if the layout was just installed.
 
@@ -80,7 +82,8 @@ You should see `all mods passed herdr-app check`. If Herdr wasn't open, open it 
 
 - **Left sidebar:** shows **Projects**. Use `+` on a project header to create a worktree.
 - **Bottom bar:** shows usage meters (`5h … · 7d …`) and the resource chip (`▭ 2.14 GB · >_ 5`).
-- **Right-click a worktree card:** you get Sleep, Open in ›, and the rest.
+- **Top right:** **Files**, **Changes**, and **Git** toggle the side panel.
+- **Right-click a worktree card:** you get Sleep, Open in ›, Commits…, and the rest.
 
 ## Update
 
@@ -95,11 +98,11 @@ To reinstall just some mods, which is faster when you're working on one, name th
 bash scripts/install.sh projects orca-project
 ```
 
-That form skips the layout and the checks. Run `herdr-app check ~/.config/herdr-app/mods/<mod>` yourself afterwards.
+That form skips layout installation and checks, but applies the small Git panel upgrade to an existing Orca layout when both companion mods are installed. Run `herdr-app check ~/.config/herdr-app/mods/<mod>` yourself afterwards.
 
 ## Rust CLI (optional)
 
-`rust/` is a Rust port of `bin/orca-wt.js` (same subcommands, same JSON on stdout). To build it and point the installed mods at the binary:
+`rust/` is a Rust port of `bin/orca-wt.js`. The Git panel currently requires the Node CLI; its source control and commit browsing subcommands are not yet ported. To build the Rust CLI and point the installed mods at the binary:
 
 ```bash
 bash scripts/install-rust.sh
@@ -123,7 +126,7 @@ From the release checkout, run `bash scripts/install-rust.sh ~/.local/bin/orca-w
 
 ```bash
 cd ~/.config/herdr-app
-rm -rf mods/{orca-setup,orca-remove,projects,orca-worktree,orca-project,orca-usage,orca-usage-panel,orca-tabs,orca-resources,orca-resources-panel} orca-icons
+rm -rf mods/{orca-setup,orca-remove,projects,orca-worktree,orca-project,orca-commits,orca-usage,orca-usage-panel,orca-tabs,orca-resources,orca-resources-panel} orca-icons
 rm layouts/orca.json
 ```
 

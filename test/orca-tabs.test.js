@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-test("orca-tabs/main.js matches upstream tabs/main.js outside ORCA-TOGGLE", (t) => {
+test("orca-tabs/main.js matches upstream tabs/main.js outside Orca customizations", (t) => {
   const upstreamPath = path.join(os.homedir(), ".config/herdr-app/mods/tabs/main.js");
   if (!fs.existsSync(upstreamPath)) {
     t.skip("upstream ~/.config/herdr-app/mods/tabs/main.js not present");
@@ -18,6 +18,8 @@ test("orca-tabs/main.js matches upstream tabs/main.js outside ORCA-TOGGLE", (t) 
   const stripped = orcaTabs
     .replace(/^\/\/ Copied from Herdr [^\n]*\n/, "")
     .replace(/[ \t]*\/\/ ORCA-TOGGLE start[\s\S]*?\/\/ ORCA-TOGGLE end\n/, "")
+    .replace(/[ \t]*\/\/ ORCA-GIT start[\s\S]*?\/\/ ORCA-GIT end\n/g, "")
+    .replace('let enabled =', 'const enabled =')
     .replaceAll("mods/orca-tabs/", "mods/tabs/");
 
   assert.equal(stripped, upstream);

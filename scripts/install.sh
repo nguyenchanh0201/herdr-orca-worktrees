@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the Orca mods into Herdr.app.
 #   bash scripts/install.sh            full install: npm deps, every mod, the "orca" layout, checks
-#   bash scripts/install.sh projects   reinstall just these mods (no layout, no checks)
+#   bash scripts/install.sh projects   reinstall just these mods (no checks)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,7 +18,7 @@ FULL=0
 MODS=("$@")
 if [[ ${#MODS[@]} -eq 0 ]]; then
   FULL=1
-  MODS=(orca-setup orca-remove projects orca-worktree orca-project orca-usage orca-usage-panel orca-tabs orca-resources orca-resources-panel)
+  MODS=(orca-setup orca-remove projects orca-worktree orca-project orca-commits orca-usage orca-usage-panel orca-tabs orca-resources orca-resources-panel)
 fi
 
 # The orca-wt CLI needs its npm dependency (yaml).
@@ -70,7 +70,16 @@ for m in "${MODS[@]}"; do
   echo "installed mod: $m"
 done
 
-[[ $FULL -eq 1 ]] || exit 0
+upgrade_git_panel() {
+  if [[ -d "$HERDR_APP_HOME/mods/orca-tabs" && -d "$HERDR_APP_HOME/mods/orca-commits" && -f "$HERDR_APP_HOME/layouts/orca.json" ]]; then
+    "$NODE_BIN" "$REPO/scripts/enable-git-panel.js" "$HERDR_APP_HOME/layouts/orca.json"
+  fi
+}
+
+if [[ $FULL -eq 0 ]]; then
+  upgrade_git_panel
+  exit 0
+fi
 
 # The layout that places the mods. Never overwrite one the person already has.
 LAYOUT="$HERDR_APP_HOME/layouts/orca.json"
@@ -82,6 +91,8 @@ else
   NEW_LAYOUT=1
   echo "installed layout: orca"
 fi
+
+upgrade_git_panel
 
 if command -v herdr-app >/dev/null 2>&1; then
   failed=0

@@ -5,6 +5,7 @@ const projects = require("../src/projects");
 const sleep = require("../src/sleep");
 const { fetchAll } = require("../src/usage");
 const worktree = require("../src/worktree");
+const commits = require("../src/commits");
 
 function parseFlaggedArgs(args) {
   const flags = {};
@@ -173,6 +174,35 @@ async function main() {
       });
       break;
     }
+    case "commits": {
+      const parsed = parseFlaggedArgs(rest);
+      const limit = Number(parsed.flags.limit);
+      result = commits.listCommits(parsed.positional[0], { limit: Number.isFinite(limit) && limit > 0 ? limit : undefined });
+      break;
+    }
+    case "commit-diff": {
+      result = commits.commitDiff(rest[0], rest[1], rest[2], rest[3]);
+      break;
+    }
+    case "commit-files": {
+      result = commits.commitFiles(rest[0], rest[1]);
+      break;
+    }
+    case "git-file":
+      result = commits.gitFile(rest[0], rest[1]);
+      break;
+    case "git-status":
+      result = commits.gitStatus(rest[0]);
+      break;
+    case "git-stage":
+      result = commits.gitStage(rest[0], rest[1], rest[2]);
+      break;
+    case "git-unstage":
+      result = commits.gitUnstage(rest[0], rest[1], rest[2]);
+      break;
+    case "git-commit":
+      result = commits.gitCommit(rest[0], rest[1]);
+      break;
     default:
       result = { error: cmd ? `unknown command: ${cmd}` : "missing command" };
   }
