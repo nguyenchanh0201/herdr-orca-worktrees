@@ -107,6 +107,23 @@ function gitError(result, fallback) {
   return (result.stderr || result.error?.message || result.stdout || fallback).trim();
 }
 
+function pushTarget(repo) {
+  const branchResult = gitRun(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  if (branchResult.status !== 0) return { reason: "Check out a branch before pushing" };
+  const branch = branchResult.stdout.trim();
+  if (gitRun(repo, ["rev-parse", "--verify", "HEAD"]).status !== 0) return { reason: "Create a commit before pushing" };
+  const config = key => gitRun(repo, ["config", "--get", key]).stdout?.trim() || "";
+  const remotes = gitRun(repo, ["remote"]).stdout?.trim().split("\n").filter(Boolean) || [];
+  const trackedRemote = config(`branch.${branch}.remote`);
+  const preferred = config(`branch.${branch}.pushRemote`) || config("remote.pushDefault");
+  const remote = preferred || trackedRemote || (remotes.includes("origin") ? "origin" : remotes.length === 1 ? remotes[0] : "");
+  if (!remote || !remotes.includes(remote)) return { reason: remotes.length > 1 ? "Configure a push remote for this branch" : "Add a remote before pushing" };
+  const trackedRef = config(`branch.${branch}.merge`);
+  const ref = remote === trackedRemote && trackedRef ? trackedRef : `refs/heads/${branch}`;
+  if (!ref.startsWith("refs/heads/") || ref.includes("\n")) return { reason: "Configure a single upstream branch before pushing" };
+  return { remote, ref, needsUpstream: !trackedRemote || !trackedRef };
+}
+
 function fileStats(repo, cached) {
   const res = gitRun(repo, ["diff", ...(cached ? ["--cached"] : []), "--numstat", "-z", "--find-renames", "--no-ext-diff", "--no-textconv", "--"]);
   if (res.status !== 0) return {};
@@ -159,6 +176,8 @@ function gitStatus(repo) {
       result.stats.untracked[file.path] = bytes.includes(0) ? { binary: true } : { add: text ? text.split("\n").length - Number(text.endsWith("\n")) : 0, del: 0 };
     } catch { /* Stats are optional; a disappearing file will be removed on refresh. */ }
   }
+  result.push = pushTarget(repo);
+  result.history = listCommits(repo, { limit: 30 });
   return result;
 }
 
@@ -214,6 +233,19 @@ function gitCommit(repo, message) {
   return res.status === 0 ? { ok: true } : { error: gitError(res, "git commit failed") };
 }
 
+function gitPush(repo) {
+  const context = repositoryRoot(repo);
+  if (context.error) return context;
+  const target = pushTarget(context.root);
+  if (target.reason) return { error: target.reason };
+  // An explicit refspec publishes only this branch, regardless of push.default.
+  const res = gitRun(context.root, ["push", "--porcelain", ...(target.needsUpstream ? ["--set-upstream"] : []), "--", target.remote, `HEAD:${target.ref}`], {
+    timeout: 120000,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
+  return res.status === 0 ? { ok: true, remote: target.remote } : { error: gitError(res, "git push failed") };
+}
+
 // Read the current working file, never the index or historical blob. The host
 // saves against this exact snapshot with writeTextFile's atomic comparison.
 function gitFile(repo, file) {
@@ -242,4 +274,4 @@ function gitFile(repo, file) {
   }
 }
 
-module.exports = { listCommits, commitFiles, commitDiff, gitStatus, gitStage, gitUnstage, gitCommit, gitFile };
+module.exports = { listCommits, commitFiles, commitDiff, gitStatus, gitStage, gitUnstage, gitCommit, gitPush, gitFile };

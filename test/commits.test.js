@@ -5,7 +5,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const { makeRepo } = require("./helpers/repo");
-const { listCommits, commitFiles, commitDiff, gitStatus, gitStage, gitUnstage, gitCommit, gitFile } = require("../src/commits");
+const { listCommits, commitFiles, commitDiff, gitStatus, gitStage, gitUnstage, gitCommit, gitPush, gitFile } = require("../src/commits");
 
 function git(cwd, args) {
   const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
@@ -302,4 +302,75 @@ test("line counts distinguish index, working tree, literal untracked names and b
 test("line counts parse NUL-delimited rename paths", () => {
   git(fx.primary, ["mv", "a.txt", "renamed\tfile.txt"]);
   assert.deepEqual(gitStatus(fx.primary).stats.staged["renamed\tfile.txt"], {add: 0, del: 0, binary: false});
+});
+
+
+test("Push publishes only the current branch, sets upstream, and leaves working edits untouched", () => {
+  const remote = path.join(fx.primary, "..", "remote.git");
+  git(fx.primary, ["init", "--bare", remote]);
+  git(fx.primary, ["remote", "add", "origin", remote]);
+  git(fx.worktree, ["config", "push.default", "matching"]);
+  fs.writeFileSync(path.join(fx.worktree, "a.txt"), "staged but uncommitted\n");
+  git(fx.worktree, ["add", "a.txt"]);
+  fs.writeFileSync(path.join(fx.worktree, "a.txt"), "unstaged edits\n");
+  const before = git(fx.worktree, ["status", "--porcelain"]);
+  const status = gitStatus(fx.worktree);
+  assert.deepEqual(status.push, {remote: "origin", ref: "refs/heads/b1", needsUpstream: true});
+  const command = spawnSync(process.execPath, [path.join(__dirname, "../bin/orca-wt.js"), "git-push", fx.worktree], {encoding: "utf8"});
+  assert.equal(command.status, 0);
+  assert.equal(JSON.parse(command.stdout).ok, true);
+  assert.equal(git(remote, ["rev-parse", "refs/heads/b1"]), git(fx.worktree, ["rev-parse", "HEAD"]));
+  assert.equal(git(remote, ["for-each-ref", "--format=%(refname)", "refs/heads"]), "refs/heads/b1");
+  assert.equal(git(fx.worktree, ["rev-parse", "--abbrev-ref", "@{upstream}"]), "origin/b1");
+  assert.equal(git(fx.worktree, ["status", "--porcelain"]), before);
+  assert.equal(gitStatus(fx.worktree).push.needsUpstream, false);
+});
+
+test("Push honors a differently named upstream and ignores broad configured push refspecs", () => {
+  const remote = path.join(fx.primary, "..", "remote.git");
+  git(fx.primary, ["init", "--bare", remote]);
+  git(fx.primary, ["remote", "add", "origin", remote]);
+  git(fx.worktree, ["config", "branch.b1.remote", "origin"]);
+  git(fx.worktree, ["config", "branch.b1.merge", "refs/heads/review"]);
+  git(fx.worktree, ["config", "remote.origin.push", "refs/heads/*:refs/heads/*"]);
+  assert.equal(gitPush(fx.worktree).ok, true);
+  assert.equal(git(remote, ["for-each-ref", "--format=%(refname)", "refs/heads"]), "refs/heads/review");
+  assert.equal(git(remote, ["rev-parse", "refs/heads/review"]), git(fx.worktree, ["rev-parse", "HEAD"]));
+});
+
+test("Push reports a non-fast-forward rejection without overwriting the remote", () => {
+  const remote = path.join(fx.primary, "..", "remote.git");
+  git(fx.primary, ["init", "--bare", remote]);
+  git(fx.primary, ["remote", "add", "origin", remote]);
+  assert.equal(gitPush(fx.primary).ok, true);
+  const branch = git(fx.primary, ["symbolic-ref", "--short", "HEAD"]);
+  fs.writeFileSync(path.join(fx.worktree, "remote-only.txt"), "remote\n");
+  git(fx.worktree, ["add", "remote-only.txt"]);
+  git(fx.worktree, ["commit", "-m", "Remote change"]);
+  git(fx.worktree, ["push", "origin", `HEAD:refs/heads/${branch}`]);
+  const remoteHead = git(remote, ["rev-parse", `refs/heads/${branch}`]);
+  fs.writeFileSync(path.join(fx.primary, "local-only.txt"), "local\n");
+  git(fx.primary, ["add", "local-only.txt"]);
+  git(fx.primary, ["commit", "-m", "Local change"]);
+  assert.match(gitPush(fx.primary).error, /rejected|fetch first|non-fast-forward/i);
+  assert.equal(git(remote, ["rev-parse", `refs/heads/${branch}`]), remoteHead);
+});
+
+test("Push explains missing or ambiguous remotes, detached HEAD, and unborn branches", () => {
+  assert.match(gitPush(fx.primary).error, /Add a remote/);
+  git(fx.primary, ["remote", "add", "one", "/unused/one"]);
+  git(fx.primary, ["remote", "add", "two", "/unused/two"]);
+  assert.match(gitPush(fx.primary).error, /Configure a push remote/);
+  git(fx.primary, ["checkout", "--detach"]);
+  assert.match(gitPush(fx.primary).error, /Check out a branch/);
+  const empty = path.join(fx.primary, "..", "empty");
+  git(fx.primary, ["init", empty]);
+  assert.match(gitPush(empty).error, /Create a commit/);
+  assert.deepEqual(gitStatus(empty).history.commits, []);
+});
+
+test("Changes status includes recent commits below the working groups", () => {
+  const status = gitStatus(fx.primary);
+  assert.equal(status.history.commits[0].subject, "init");
+  assert.equal(status.history.commits[0].hash, git(fx.primary, ["rev-parse", "HEAD"]));
 });

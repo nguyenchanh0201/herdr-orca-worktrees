@@ -543,3 +543,86 @@ test("status supplies separate staged and working line counts and large previews
   assert.equal(h.view.diffRows.length, 1500);
   assert.equal(h.view.diffLimited, true);
 });
+
+
+test("Push is serialized, preserves the commit draft, shows failures, and refreshes after success", async () => {
+  const h = panelHarness("changes");
+  await h.resolve(0, {push: {remote: "origin", needsUpstream: true}, history: {commits: [{hash: "a", subject: "First"}]}});
+  h.view.message.set_value("draft");
+  h.view.push(h.cx);
+  h.view.push(h.cx);
+  assert.equal(h.view.busyCommand, "git-push");
+  assert.equal(h.pending.length, 2);
+  assert.deepEqual(Array.from(h.pending[1].args), ["git-push", "/first"]);
+  await h.resolve(1, {error: "rejected: fetch first"});
+  assert.match(h.view.actionError, /rejected/);
+  assert.equal(h.view.message.value(), "draft");
+  await h.resolve(2, {push: {remote: "origin"}});
+  h.view.push(h.cx);
+  await h.resolve(3, {ok: true});
+  assert.equal(h.pending[4].args[0], "git-status");
+  assert.equal(h.view.busy, false);
+  assert.equal(h.view.message.value(), "draft");
+});
+
+test("unavailable Push targets cannot trigger a Git operation", async () => {
+  const h = panelHarness("changes");
+  await h.resolve(0, {push: {reason: "Add a remote before pushing"}});
+  h.view.push(h.cx);
+  assert.equal(h.pending.length, 1);
+});
+
+test("recent commits load in Changes and keyboard selection opens commit details", async () => {
+  const h = panelHarness("changes");
+  await h.resolve(0, {history: {commits: [{hash: "first", subject: "First"}, {hash: "second", subject: "Second"}]}});
+  assert.equal(h.view.recentCommits.length, 2);
+  h.key("tab"); h.key("tab");
+  assert.equal(h.view.lane, "recent");
+  h.key("j");
+  assert.equal(h.view.recentCursor, 1);
+  h.key("s");
+  assert.equal(h.pending.length, 1);
+  h.key("enter");
+  assert.equal(h.view.mode, "history");
+  assert.equal(h.view.selected, "second");
+  assert.deepEqual(Array.from(h.pending[2].args), ["commit-files", "/first", "second"]);
+  await h.resolve(1, {commits: [{hash: "first"}, {hash: "second"}]});
+  assert.equal(h.view.selected, "second");
+  assert.equal(h.view.lane, "files");
+});
+
+test("recent commit history is cleared when changing worktrees", async () => {
+  const h = panelHarness("changes");
+  await h.resolve(0, {history: {commits: [{hash: "first"}]}});
+  h.setFolder("/second"); h.view.syncFolder(h.cx);
+  assert.equal(h.view.recentCommits.length, 0);
+  await h.resolve(1, {history: {error: "Could not read history"}});
+  assert.match(h.view.recentError, /Could not read/);
+});
+
+test("brackets switch the top Changes and History tabs from any navigation section", async () => {
+  const h = panelHarness("changes");
+  await h.resolve(0, {changes: []});
+  h.view.message.set_value("keep this draft");
+  for (const lane of ["files", "diff", "recent"]) {
+    h.view.lane = lane;
+    h.key("]");
+    assert.equal(h.view.mode, "history");
+    assert.equal(h.view.lane, "commits");
+    h.key("[");
+    assert.equal(h.view.mode, "changes");
+    assert.equal(h.view.lane, "files");
+  }
+  assert.equal(h.view.message.value(), "keep this draft");
+  const requests = h.pending.length;
+  h.view.editing = true;
+  h.key("]");
+  h.view.editing = false;
+  h.key("]", {platform: true});
+  h.key("]", {control: true});
+  h.key("]", {alt: true});
+  h.view.busy = true;
+  h.key("]");
+  assert.equal(h.view.mode, "changes");
+  assert.equal(h.pending.length, requests);
+});

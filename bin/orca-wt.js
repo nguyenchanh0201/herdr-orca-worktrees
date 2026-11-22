@@ -203,6 +203,9 @@ async function main() {
     case "git-commit":
       result = commits.gitCommit(rest[0], rest[1]);
       break;
+    case "git-push":
+      result = commits.gitPush(rest[0]);
+      break;
     default:
       result = { error: cmd ? `unknown command: ${cmd}` : "missing command" };
   }

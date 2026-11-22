@@ -47,3 +47,14 @@ The Orca layout now uses `orca-commits` behind its existing **Changes** entry. T
 Local file watching refreshes the selected worktree automatically, coalesces events during Git operations, cancels stale watches when changing context, and retains ten-second polling if watching is unavailable. Git reads avoid optional index locks and fsmonitor side effects. File counts distinguish index and working edits, including NUL-delimited rename paths and literal tabs in filenames. Untracked text counts are bounded to regular files up to 400,000 bytes. Diff previews cap rows at 1,500 and line lengths at 4,000; Neovim opens the full working file.
 
 This version explicitly supports local workspaces. Remote contexts are detected before loading or mutating Git and show a limitation instead of using local paths. Commit continues to use the index only; no implicit stage-all behavior is carried over from the shipped Changes panel.
+
+
+## Push and inline recent history
+
+The commit form now includes **↑ Push**, with ahead counts when tracked. A new branch displays **Push · publish** and sets an upstream on success. The destination follows the configured push remote or upstream; otherwise origin or a sole remote is selected. Ambiguous remotes, detached HEAD and unborn branches give explicit reasons. An explicit branch refspec prevents broad configured push refspecs from publishing other branches. Push runs with a bounded timeout and noninteractive Git credential prompting; errors remain visible, and user drafts are preserved. It never implicitly stages or commits. Tests use local bare remotes for initial publication, differently named upstreams and rejected updates.
+
+The Changes view includes a resizable **Recent commits** section below the working groups. It lists the latest 30 commits and refreshes with status. Clicking a commit opens its files and diff in the full history view; keyboard users can Tab to the list, move with j/k and press Enter. View all opens the existing 100-commit browser. The section reports empty repositories and history errors. Existing section size values are retained, with a new saved size for the history section.
+
+## Content viewport sizing
+
+The native resizable group previously used an explicit height calculated from a cached root measurement. At reduced zoom, the shortcut footer could sit hundreds of pixels above the bottom, leaving an unused area outside the dividers. The root now allocates its remaining height to a flex viewport, and the native group fills that viewport absolutely. The footer occupies only its fixed 24 logical pixels; saved section sizes remain unchanged. A live screenshot measurement at 70% zoom moved the footer from 539 to 60 physical pixels above the window bottom (including the app status bar). Native geometry was checked in the running app because the JavaScript view-state harness does not perform GPUI layout.
