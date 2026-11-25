@@ -15,7 +15,7 @@ import { View } from "gpui-kit";
 import { v_flex, TextareaState } from "gpui-base";
 import { focused, notify, panes, props, shared, theme } from "herdr";
 import { Tracer, event, run } from "./telemetry.js";
-import { endTerminal, gv, labelled, message, onArgs, pushRepo } from "./engine.js";
+import { endTerminal, gv, labelled, message, onArgs, pushRepo, pushState } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import { answer, askIn, cursorIn, handoffIn, setIgnoredDirs, handoffs, liveView, notesKey, notesOf, setHandoff, setTreeMode, setView, treeMode, viewIn } from "./shared.js";
@@ -516,6 +516,12 @@ export default class GitList extends View {
         const root = poll && this.loadedKey === ctx.key ? old?.where.root : null;
         const repo = root ? ["--repo", root, "--root"] : ["--repo", ctx.cwd];
         status = await gv(["status", ...repo, "--scope", this.scope, ...known, ...sub, ...onArgs(ctx.on)]);
+        // The native engine does not expose outgoing commit counts. Read
+        // Orca's status only for the clean local worktree's Push action.
+        if (!ctx.on && this.scope === "worktree" && status.sections.every(section => section.files.length === 0)) {
+          try { status.pushState = await pushState({root: status.root, on: null}); }
+          catch { status.pushState = null; }
+        }
       } catch (e) {
         if (current() && ctx.key === this.ctx.key) {
           const m = message(e);
@@ -855,8 +861,14 @@ export default class GitList extends View {
     });
   }
 
-  push(cx) {
-    if (this.mode !== "files" || this.scope !== "worktree" || this.typing || !this.showsFocus() || !this.work || this.pushing || this.commitRunning() || this.loads.busy()) return;
+  primaryPush() {
+    const state = this.work?.status.pushState;
+    if (!this.work || this.work.files() || this.commitInput.value().trim() || !state?.available || !(state.ahead > 0 || state.publish)) return null;
+    return {label: this.pushing ? "Pushing…" : state.ahead > 0 ? `Push ${state.ahead} ↑` : "Push · publish ↑", busy: Boolean(this.pushing)};
+  }
+
+  push(cx, {fromButton = false} = {}) {
+    if (this.mode !== "files" || this.scope !== "worktree" || (!fromButton && (this.typing || !this.showsFocus())) || !this.work || this.pushing || this.commitRunning() || this.loads.busy()) return;
     const where = {...this.work.where};
     this.pushing = true;
     this.loads.run(cx, "push", async (cx) => {

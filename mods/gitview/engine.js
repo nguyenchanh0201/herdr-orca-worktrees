@@ -18,16 +18,26 @@ async function loadConfig() {
 }
 
 // Reuse Orca's branch-aware push implementation (including first publish).
-export async function pushRepo(where) {
+async function orcaGit(command, where) {
   if (!where?.root) throw new Error("No repository selected");
   if (where.on) throw new Error("Push from gitview currently supports local repositories only");
   const cfg = await loadConfig();
   if (!cfg.node || !cfg.cli) throw new Error("Run bash scripts/install.sh to configure gitview push");
-  const result = await exec(cfg.node, [cfg.cli, "git-push", where.root]);
+  const result = await exec(cfg.node, [cfg.cli, command, where.root]);
   let response;
   try { response = JSON.parse(result.stdout); } catch { /* handled below */ }
-  if (result.code !== 0 || !response?.ok) throw new Error(response?.error || result.stderr || "Git push failed");
+  if (result.code !== 0 || !response || response.error) throw new Error(response?.error || result.stderr || "Git operation failed");
   return response;
+}
+
+export async function pushRepo(where) {
+  const result = await orcaGit("git-push", where);
+  if (!result.ok) throw new Error("Git push did not return success");
+  return result;
+}
+export async function pushState(where) {
+  const status = await orcaGit("git-status", where);
+  return {ahead: status.ahead, publish: Boolean(status.push?.needsUpstream), available: Boolean(status.push && !status.push.reason)};
 }
 
 // The environment the binary needs under the app (it can't see appHome()).

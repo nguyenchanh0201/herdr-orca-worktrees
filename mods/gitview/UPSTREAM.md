@@ -7,7 +7,7 @@ Each folder retains the upstream MIT license.
 Our changes are source edits: section headers always show their stage/unstage
 buttons, working-change headers participate in Vim navigation and show a selection
 highlight, and Enter on a header stages or unstages the section. Discard remains
-available on hover. Shift+P pushes from the Changes list through Orca’s Node CLI; it preserves commit drafts and reports failures in the panel. Push currently supports local repositories. These changes live in `listview.js`, `filelist.js`, `main.js`, `modes.js`, and `engine.js`.
+available on hover. Shift+P pushes from the Changes list through Orca’s Node CLI; it preserves commit drafts and reports failures in the panel. The primary button becomes Push with an outgoing count when the working tree and commit message are empty. Push currently supports local repositories. These changes live in `listview.js`, `filelist.js`, `main.js`, `modes.js`, and `engine.js`.
 
 `bash scripts/install.sh` installs these local sources. It generates the installed
 `gitview/config.json` and fetches only the native engine, pinned by version and

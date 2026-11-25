@@ -177,8 +177,8 @@ export function diffHeader(t, view, { loading, onClose, rich }) {
 // The stock Changes panel's commit row: enter commits the staged changes,
 // or everything when nothing is staged.
 // `narrow`: the button just says "Commit" (the message gets the room).
-export function commitBox(t, state, typing, staged, busy, onCommit, narrow = false) {
-  const ready = Boolean(state.value().trim()) && !busy;
+export function commitBox(t, state, typing, staged, busy, onCommit, narrow = false, push = null) {
+  const ready = push ? !push.busy && !busy : Boolean(state.value().trim()) && !busy;
   return h_flex()
     .flex_none()
     .items_end()
@@ -210,14 +210,14 @@ export function commitBox(t, state, typing, staged, busy, onCommit, narrow = fal
         .px(12)
         .flex_none()
         .when(ready, (e) => e.cursor_pointer())
-        .on_click((_e, cx) => onCommit(cx))
+        .on_click((_e, cx) => { if (ready) (push ? push.run : onCommit)(cx); })
         .flex()
         .items_center()
         .rounded(8)
         .bg(ready ? t.solid : t.raised)
         .text_color(ready ? t.solid_foreground : t.dim)
         .text_size(12)
-        .child(busy ? "Committing…" : narrow ? "Commit" : staged ? "Commit staged" : "Commit all"),
+        .child(push ? push.label : busy ? "Committing…" : narrow ? "Commit" : staged ? "Commit staged" : "Commit all"),
     );
 }
 

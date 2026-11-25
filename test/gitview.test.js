@@ -159,12 +159,74 @@ test("gitview push bridge publishes to a local bare remote and reports Git failu
     exec: async (cmd,args) => {const r=spawnSync(cmd,Array.from(args),{encoding:"utf8"}); return {code:r.status,stdout:r.stdout,stderr:r.stderr};},
   });
   const source = fs.readFileSync(path.join(__dirname,"../mods/gitview/engine.js"),"utf8");
-  vm.runInContext(source.replace(/^import .*;\n/gm, "").replace(/export /g, "") + "\nglobalThis.push = pushRepo;",context);
+  vm.runInContext(source.replace(/^import .*;\n/gm, "").replace(/export /g, "") + "\nglobalThis.push = pushRepo; globalThis.pushState = pushState;",context);
+  const before = await context.pushState({root:repo.primary,on:null});
+  assert.equal(before.publish, true);
+  assert.equal(before.available, true);
   const result = await context.push({root:repo.primary,on:null});
   assert.equal(result.remote,"origin");
+  assert.equal((await context.pushState({root:repo.primary,on:null})).ahead, 0);
+  fs.writeFileSync(path.join(repo.primary, "outgoing.txt"), "outgoing\n");
+  execFileSync("git", ["-C", repo.primary, "add", "outgoing.txt"]);
+  execFileSync("git", ["-C", repo.primary, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "outgoing"], {stdio: "ignore"});
+  const outgoing = await context.pushState({root:repo.primary,on:null});
+  assert.equal(outgoing.ahead, 1);
+  assert.equal(outgoing.publish, false);
   const branch = execFileSync("git", ["-C", repo.primary, "branch", "--show-current"], {encoding:"utf8"}).trim();
   assert.equal(execFileSync("git",["-C",repo.primary,"rev-parse","--abbrev-ref","@{upstream}"],{encoding:"utf8"}).trim(), `origin/${branch}`);
   execFileSync("git",["-C",repo.primary,"remote","remove","origin"]);
   await assert.rejects(context.push({root:repo.primary,on:null}), /Add a remote/);
   await assert.rejects(context.push({root:repo.primary,on:"remote-machine"}), /local repositories/);
+});
+
+test("clean Changes offers counted Push or first publish; edits, drafts and up-to-date branches keep Commit", () => {
+  const context = vm.createContext({View: class {}});
+  vm.runInContext(readModSource("gitview") + "\nglobalThis.Mod = GitList;", context);
+  const view = new context.Mod();
+  let files = 0, draft = "";
+  view.work = {files: () => files, status: {pushState: {ahead: 3, available: true, publish: false}}};
+  view.commitInput = {value: () => draft};
+  assert.equal(view.primaryPush().label, "Push 3 ↑");
+  view.pushing = true;
+  assert.equal(view.primaryPush().label, "Pushing…");
+  assert.equal(view.primaryPush().busy, true);
+  view.pushing = false;
+  files = 1; assert.equal(view.primaryPush(), null);
+  files = 0; draft = "commit draft"; assert.equal(view.primaryPush(), null);
+  draft = ""; view.work.status.pushState.ahead = 0;
+  assert.equal(view.primaryPush(), null);
+  view.work.status.pushState.publish = true;
+  assert.equal(view.primaryPush().label, "Push · publish ↑");
+  view.work.status.pushState.available = false;
+  assert.equal(view.primaryPush(), null);
+  view.work.status.pushState = null;
+  assert.equal(view.primaryPush(), null);
+});
+
+test("primary action renders Push and dispatches push, with repeated clicks disabled while pushing", () => {
+  const elements = [];
+  function el() {
+    const rec = {children:[]}; elements.push(rec);
+    const proxy = new Proxy({}, {get(_,key) {
+      if(key === 'when') return (ok,fn) => ok ? fn(proxy) : proxy;
+      if(key === 'id') return id => {rec.id=id; return proxy;};
+      if(key === 'child') return child => {rec.children.push(child); return proxy;};
+      if(key === 'on_click') return fn => {rec.click=fn; return proxy;};
+      return () => proxy;
+    }});
+    return proxy;
+  }
+  const context=vm.createContext({div:el,h_flex:el,Textarea:{new:el}});
+  const source=fs.readFileSync(path.join(__dirname,'../mods/gitview/chrome.js'),'utf8');
+  vm.runInContext(source.replace(/^import .*;\n/gm,'').replace(/export /g,'')+'\nglobalThis.commitBox=commitBox;',context);
+  let commits=0,pushes=0;
+  const render = busy => {
+    elements.length=0;
+    context.commitBox({}, {value:()=>''},false,false,false,()=>commits++,false,{label:busy?'Pushing…':'Push 3 ↑',busy,run:()=>pushes++});
+    return elements.find(e=>e.id==='gitview-commit');
+  };
+  let button=render(false);
+  assert.ok(button.children.includes('Push 3 ↑'));
+  button.click({},{}); assert.equal(pushes,1); assert.equal(commits,0);
+  button=render(true); button.click({},{}); assert.equal(pushes,1);
 });

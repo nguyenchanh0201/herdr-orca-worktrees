@@ -66,9 +66,12 @@ export const MODES = {
       onLog: (cx) => { openLog(v, cx); cx.notify(); },
     }),
     body: (v, t, focused) => filesBody(v, t, focused, v.work),
-    under: (v, t) => (v.scope === "worktree" && v.work
-      ? commitBox(t, v.commitInput, v.typing, v.work.status.sections.some((s) => s.id === "staged"), v.commitRunning(), (cx) => v.commit(cx), v.width < 320)
-      : null),
+    under: (v, t) => {
+      if (v.scope !== "worktree" || !v.work) return null;
+      const push = v.primaryPush();
+      return commitBox(t, v.commitInput, v.typing, v.work.status.sections.some((s) => s.id === "staged"), v.commitRunning(), (cx) => v.commit(cx), v.width < 320,
+        push ? {...push, busy: push.busy || v.loads.busy(), run: (cx) => { v.focusHere(cx); v.push(cx, {fromButton: true}); }} : null);
+    },
     keys: [
       { caps: ["j", "k"], label: "move", on: { j: down, down, k: up, up } },
       { caps: ["s"], label: "stage", rank: 1, when: worktree, on: { s: (v, cx) => v.rowAction("stage", null, cx) } },
