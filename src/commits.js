@@ -19,11 +19,12 @@ function repositoryRoot(repo) {
     : { error: gitError(res, "Could not read repository") };
 }
 
-function listCommits(repo, { limit = 100 } = {}) {
+function listCommits(repo, { limit = 100, graph = false } = {}) {
   if (!repo) return { error: "Missing repository path" };
-  const format = ["%H", "%h", "%an", "%ad", "%s"].join(FIELD_SEP) + RECORD_SEP;
+  const format = (graph ? FIELD_SEP : "") + ["%H", "%h", "%an", "%ad", ...(graph ? ["%P", "%D"] : []), "%s"].join(FIELD_SEP) + RECORD_SEP;
   const res = gitRun(repo, [
     "log",
+    ...(graph ? ["--graph", "--all", "--topo-order", "--decorate=short", "--color=never"] : []),
     `-n`,
     String(limit),
     `--date=short`,
@@ -34,6 +35,21 @@ function listCommits(repo, { limit = 100 } = {}) {
     // An empty repo (no commits yet) isn't an error, just nothing to list.
     if (/does not have any commits yet|unknown revision/i.test(msg)) return { commits: [] };
     return { error: msg };
+  }
+  if (graph) {
+    const commits = [];
+    for (const line of (res.stdout || "").split("\n")) {
+      if (!line) continue;
+      const marker = line.indexOf(FIELD_SEP);
+      if (marker < 0) {
+        if (commits.length) commits[commits.length - 1].graphLines.push(line);
+        continue;
+      }
+      const [hash, short, author, date, parents, refs, ...subject] = line.slice(marker + 1).replace(RECORD_SEP, "").split(FIELD_SEP);
+      commits.push({ hash, short, author, date, parents: parents ? parents.split(" ") : [], refs,
+        subject: subject.join(FIELD_SEP), graphLines: [line.slice(0, marker)] });
+    }
+    return { commits };
   }
   const commits = (res.stdout || "")
     .split(RECORD_SEP)

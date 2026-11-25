@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 // Upgrade the saved Orca layout without replacing its custom panes or sizing.
-function enableGitPanel(layout, { agents = false } = {}) {
+function enableGitPanel(layout, { agents = false, gitview = false } = {}) {
   function find(node, id) {
     if (node.id === id) return node;
     for (const child of node.children || []) {
@@ -27,7 +27,12 @@ function enableGitPanel(layout, { agents = false } = {}) {
     changes.content = { ...changes.content, mod: "orca-commits" };
     changed = true;
   }
-  if (body.children.find(child => child.id === "changes")?.content?.mod === "orca-commits" && git) {
+  const slot = body.children.find(child => child.id === "changes");
+  if (gitview && ["changes", "orca-commits"].includes(slot?.content?.mod)) {
+    slot.content = {mod: "gitview", props: {replaces: slot.content}};
+    changed = true;
+  }
+  if (["orca-commits", "gitview"].includes(slot?.content?.mod) && git) {
     body.children = body.children.filter(child => child !== git);
     if (body.active === "git") body.active = "changes";
     changed = true;
@@ -44,7 +49,8 @@ if (require.main === module) {
   const file = process.argv[2];
   const layout = JSON.parse(fs.readFileSync(file, "utf8"));
   const agentsInstalled = fs.existsSync(path.join(path.dirname(file), "..", "mods", "orca-agents", "mod.json"));
-  if (enableGitPanel(layout, { agents: agentsInstalled })) {
+  const gitviewInstalled = fs.existsSync(path.join(path.dirname(file), "..", "mods", "gitview", "config.json"));
+  if (enableGitPanel(layout, { agents: agentsInstalled, gitview: gitviewInstalled })) {
     fs.copyFileSync(file, `${file}.before-git`);
     fs.writeFileSync(`${file}.tmp`, JSON.stringify(layout, null, 2) + "\n");
     fs.renameSync(`${file}.tmp`, file);
@@ -53,7 +59,8 @@ if (require.main === module) {
   const keysFile = process.argv[3];
   if (keysFile) {
     const keys = fs.existsSync(keysFile) ? JSON.parse(fs.readFileSync(keysFile, "utf8")) : {};
-    if (enableChangesShortcut(keys)) {
+    const gitview = usesGitview(layout);
+    if (enableChangesShortcut(keys, { gitview })) {
       if (fs.existsSync(keysFile)) fs.copyFileSync(keysFile, `${keysFile}.before-changes`);
       fs.writeFileSync(`${keysFile}.tmp`, JSON.stringify(keys, null, 2) + "\n");
       fs.renameSync(`${keysFile}.tmp`, keysFile);
@@ -61,12 +68,22 @@ if (require.main === module) {
   }
 }
 
-function enableChangesShortcut(keys) {
+function usesGitview(node) {
+  if (node?.id === "changes" && node.content?.mod === "gitview") return true;
+  return (node?.children || []).some(usesGitview);
+}
+
+function enableChangesShortcut(keys, { gitview = false } = {}) {
   const section = keys["layout:orca"] ||= {};
   let changed = false;
   // Preserve an explicitly customized Orca shortcut.
-  if (!section["cmd-shift-g"]) {
-    section["cmd-shift-g"] = "orca-tabs.changes";
+  const changesCommand = gitview ? "mod.open:gitview-sidebar" : "orca-tabs.changes";
+  if (gitview && !section["cmd-g"]) {
+    section["cmd-g"] = "mod.open:gitview-tab";
+    changed = true;
+  }
+  if (!section["cmd-shift-g"] || (["orca-tabs.changes", "mod.open:gitview-sidebar"].includes(section["cmd-shift-g"]) && section["cmd-shift-g"] !== changesCommand)) {
+    section["cmd-shift-g"] = changesCommand;
     changed = true;
   }
   for (const [key, command] of [["cmd-shift-h", "pane.go:left"], ["cmd-shift-j", "pane.go:down"], ["cmd-shift-k", "pane.go:up"], ["cmd-shift-l", "pane.go:right"]]) {

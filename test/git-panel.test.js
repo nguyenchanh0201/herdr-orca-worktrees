@@ -522,6 +522,28 @@ test("Changes shortcut is scoped to Orca and preserves customized bindings", () 
   assert.equal(enableChangesShortcut(keys), false);
 });
 
+test("gitview survives Orca upgrades and replaces only Orca's Changes shortcut", () => {
+  const content = {mod: "gitview", props: {replaces: {mod: "orca-commits"}}};
+  const layout = {id: "panel-body", type: "stack", active: "git", children: [
+    {id: "changes", content},
+    {id: "git", content: {mod: "orca-commits"}},
+  ]};
+  assert.equal(enableGitPanel(layout), true);
+  assert.equal(layout.children[0].content, content);
+  assert.equal(layout.active, "changes");
+  assert.equal(layout.children.length, 1);
+  assert.equal(enableGitPanel(layout), false);
+  const keys = {"layout:orca": {"cmd-shift-g": "orca-tabs.changes"}};
+  enableChangesShortcut(keys, {gitview: true});
+  assert.equal(keys["layout:orca"]["cmd-shift-g"], "mod.open:gitview-sidebar");
+  assert.equal(enableChangesShortcut(keys, {gitview: true}), false);
+  enableChangesShortcut(keys);
+  assert.equal(keys["layout:orca"]["cmd-shift-g"], "orca-tabs.changes");
+  keys["layout:orca"]["cmd-shift-g"] = "custom.command";
+  enableChangesShortcut(keys, {gitview: true});
+  assert.equal(keys["layout:orca"]["cmd-shift-g"], "custom.command");
+});
+
 test("file watching refreshes local Changes and cancels watches on folder changes and close", async () => {
   const h = panelHarness("changes");
   await h.resolve(0, {root: "/first", changes: []});
@@ -789,3 +811,25 @@ for (const [key, command] of [["p", "git-push"], ["u", "git-pull"]]) {
     assert.equal(h.pending[1].args[0], command);
   });
 }
+
+test("History requests all-branch graph and graph rows select commits for file and diff viewing", async () => {
+  const h = panelHarness("history");
+  assert.ok(h.pending[0].args.includes("--graph"));
+  await h.resolve(0, {commits: [{hash: "merge", short: "abc", subject: "Merge", author: "a", date: "today", parents: ["a", "b"], refs: "HEAD -> main", graphLines: ["*   ", "|\\  "]}]});
+  const list = h.view.commitList(h.colors);
+  function find(node, id) {
+    if (node?.styles?.id === id) return node;
+    for (const item of node?.items || []) { const result = find(item, id); if (result) return result; }
+  }
+  const row = find(list, "commit-merge");
+  const graph = find(row, "graph-merge");
+  assert.deepEqual(Array.from(graph.items, item => item.items[0]), ["●   ", "│╲  "]);
+  row.styles.on_click({}, h.cx);
+  assert.equal(h.view.selected, "merge");
+  assert.equal(h.pending.at(-1).args[0], "commit-files");
+  assert.equal(h.pending.at(-1).args[2], "merge");
+  const linear = h.view.commitRow("a", "A", "info", h.colors, {parents: ["b"], graphLines: ["* | "]}, 30);
+  assert.deepEqual(Array.from(find(linear, "graph-a").items, item => item.items[0]), ["● │ ", "│ │ "]);
+  const root = h.view.commitRow("b", "B", "info", h.colors, {parents: [], graphLines: ["* "]}, 15);
+  assert.deepEqual(Array.from(find(root, "graph-b").items, item => item.items[0]), ["● ", "  "]);
+});

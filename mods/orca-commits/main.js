@@ -209,7 +209,7 @@ export default class OrcaCommits extends View {
     this.error = "";
     cx.spawn(async (cx) => {
       try {
-        const log = await this.cli(["commits", folder, "--limit", "100"]);
+        const log = await this.cli(["commits", folder, "--limit", "100", "--graph"]);
         if (generation !== this.generation) return;
         if (log.error) this.error = log.error;
         else {
@@ -496,22 +496,33 @@ export default class OrcaCommits extends View {
       .child(div().flex_1().truncate().text_color(t.dim).child(detail));
   }
 
-  commitRow(key, title, subtitle, t) {
-    return v_flex().id(`commit-${key}`).flex_none().px(10).py(6).gap(2).rounded(5).cursor_pointer()
+  commitRow(key, title, subtitle, t, commit = null, graphWidth = 0) {
+    const lines = [...(commit?.graphLines || [])];
+    // Every commit needs two text lines. Continue its lane when Git has no
+    // intervening edge row, so the graph stays connected beside the metadata.
+    if (lines.length === 1) lines.push(lines[0].replace("*", commit.parents?.length ? "|" : " "));
+    const glyphs = line => line.replace(/\*/g, "●").replace(/\|/g, "│").replace(/\//g, "╱").replace(/\\/g, "╲").replace(/_/g, "─");
+    return h_flex().id(`commit-${key}`).flex_none().min_w(0).gap(8).px(5).rounded(3).cursor_pointer()
       .when(this.selected === key, el => el.bg(t.selected))
       .hover(s => s.bg(t.hover))
       .on_click((_e, cx) => { this.focusLane("commits", cx); this.select(key, cx); })
-      .child(div().text_size(12).truncate().child(title))
-      .child(div().text_size(10.5).text_color(t.dim).truncate().child(subtitle));
+      .when(graphWidth > 0, el => el.child(v_flex().id(`graph-${key}`).w(graphWidth).flex_none().font_family("JetBrains Mono").text_size(12).text_color(t.accent)
+        .children((lines.length ? lines : ["", ""]).map(line => div().h(18).flex_none().child(glyphs(line))))))
+      .child(v_flex().flex_1().min_w(0)
+        .child(h_flex().h(18).gap(6).items_center()
+          .when(Boolean(commit?.refs), el => el.child(div().text_size(10).text_color(t.accent).max_w(180).truncate().child(commit.refs)))
+          .child(div().flex_1().min_w(0).text_size(12).truncate().child(title)))
+        .child(div().h(18).text_size(10.5).text_color(t.dim).truncate().child(subtitle)));
   }
 
   commitList(t) {
+    const graphWidth = Math.max(0, ...this.commits.flatMap(c => (c.graphLines || []).map(line => line.length * 7.3)));
     return v_flex().size_full().min_w(0).min_h(0).overflow_hidden()
-      .child(this.sectionTitle("Commits", "commits", t, `${this.commits.length}`))
-      .child(v_flex().id("commits-list").flex_1().min_h(0).w_full().p(5).gap(2)
+      .child(this.sectionTitle("Commit graph", "commits", t, `${this.commits.length} · all branches`))
+      .child(v_flex().id("commits-list").flex_1().min_h(0).w_full().p(5)
         .overflow_y_scroll().track_scroll(this.commitScroll)
-        .child(this.commitRow("WORKING", "Working tree", "Uncommitted changes", t))
-        .children(this.commits.map(c => this.commitRow(c.hash, c.subject || "(no message)", `${c.short} · ${c.author} · ${c.date}`, t))));
+        .child(this.commitRow("WORKING", "Working tree", "Uncommitted changes", t, null, graphWidth))
+        .children(this.commits.map(c => this.commitRow(c.hash, c.subject || "(no message)", `${c.short} · ${c.author} · ${c.date}`, t, c, graphWidth))));
   }
 
   fileList(t) {

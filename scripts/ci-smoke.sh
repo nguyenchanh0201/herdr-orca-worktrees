@@ -32,6 +32,10 @@ const expectedMods = fs.readdirSync('mods')
 assert.deepEqual(fs.readdirSync(installDir).sort(), expectedMods.sort());
 
 for (const name of expectedMods) {
+  if (name === 'gitview' || name.startsWith('gitview-')) {
+    assert.ok(!fs.existsSync(path.join(installDir, name, 'config.js')), `${name} keeps its own engine config`);
+    continue;
+  }
   const file = path.join(installDir, name, 'config.js');
   const config = fs.readFileSync(file, 'utf8').trim();
   const match = /^export default (.+);$/.exec(config);

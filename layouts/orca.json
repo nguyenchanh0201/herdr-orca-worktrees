@@ -135,7 +135,10 @@
                               "id": "changes",
                               "type": "block",
                               "content": {
-                                "mod": "orca-commits"
+                                "mod": "gitview",
+                                "props": {
+                                  "replaces": {"mod": "orca-commits"}
+                                }
                               }
                             }
                           ],

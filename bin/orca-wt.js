@@ -177,7 +177,7 @@ async function main() {
     case "commits": {
       const parsed = parseFlaggedArgs(rest);
       const limit = Number(parsed.flags.limit);
-      result = commits.listCommits(parsed.positional[0], { limit: Number.isFinite(limit) && limit > 0 ? limit : undefined });
+      result = commits.listCommits(parsed.positional[0], { limit: Number.isFinite(limit) && limit > 0 ? limit : undefined, graph: Boolean(parsed.flags.graph) });
       break;
     }
     case "commit-diff": {

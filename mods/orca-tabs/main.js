@@ -43,6 +43,10 @@ export default class Tabs extends View {
       for (;;) {
         const command = await nextCommand();
         if (command === "changes") {
+          if (find(layout(), "changes")?.content?.mod === "gitview") {
+            run("mod.open:gitview-sidebar");
+            continue;
+          }
           run("layout.select", { stack: "panel-body", child: "changes" });
           run("layout.show", { id: "panel" });
           run("orca-commits.focus");
@@ -148,7 +152,8 @@ export default class Tabs extends View {
     const panel = find(root, "panel"), body = find(root, "panel-body");
     let enabled = shared("workspace.panels") ?? ["files", "changes"];
     // ORCA-GIT start
-    if (body?.children?.some(child => child.id === "changes" && child.content?.mod === "orca-commits")) enabled = [...new Set([...enabled.filter(id => id !== "git"), "changes"])];
+    const gitview = body?.children?.some(child => child.id === "changes" && child.content?.mod === "gitview");
+    if (gitview || body?.children?.some(child => child.id === "changes" && child.content?.mod === "orca-commits")) enabled = [...new Set([...enabled.filter(id => id !== "git"), "changes"])];
     // ORCA-GIT end
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
@@ -157,6 +162,9 @@ export default class Tabs extends View {
         .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
         .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
         .on_click(() => {
+          // ORCA-GIT start
+          if (id === "changes" && gitview) { run("mod.open:gitview-sidebar"); return; }
+          // ORCA-GIT end
           if (on) run("layout.hide", { id: "panel" });
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
           // ORCA-GIT start

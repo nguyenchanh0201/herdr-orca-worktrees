@@ -25,7 +25,7 @@ Herdr's GPUI controls and theme colors provide the native implementation. The di
 
 ## Scope and remaining gaps
 
-Core local source-control workflow and history are implemented and covered by temporary-repository and view-state tests. This is not complete VS Code extension parity: branch checkout, combined sync, discard, stash, amend, hunk staging, graph lanes, and a side-by-side editable diff are not implemented here. VS Code's runtime appearance and these additional operations were not investigated. The compact native layout is an adaptation rather than a pixel-for-pixel workbench copy.
+Core local source-control workflow and history are implemented and covered by temporary-repository and view-state tests. This is not complete VS Code extension parity: branch checkout, combined sync, discard, stash, amend, hunk staging, and a side-by-side editable diff are not implemented here. VS Code's runtime appearance and these additional operations were not investigated. The compact native layout is an adaptation rather than a pixel-for-pixel workbench copy.
 
 ## Validation
 
@@ -58,3 +58,7 @@ Commit history is available through the **History** tab (`⌘L`). The duplicate 
 ## Content viewport sizing
 
 The native resizable group previously used an explicit height calculated from a cached root measurement. At reduced zoom, the shortcut footer could sit hundreds of pixels above the bottom, leaving an unused area outside the dividers. The root now allocates its remaining height to a flex viewport, and the native group fills that viewport absolutely. The footer occupies only its fixed 24 logical pixels; saved section sizes remain unchanged. A live screenshot measurement at 70% zoom moved the footer from 539 to 60 physical pixels above the window bottom (including the app status bar). Native geometry was checked in the running app because the JavaScript view-state harness does not perform GPUI layout.
+
+## History graph
+
+History requests Git’s topological graph across all local refs (including local branches, fetched remote branches and tags). The latest 100 commits include parent hashes, ref labels, and graph edge rows; the default CLI commit list remains unchanged unless `--graph` is supplied. The native view renders connected monospace lanes alongside selectable commit rows. Commit selection, file inspection, first-parent merge diffs and Vim navigation keep the existing behavior. No network operation is performed when viewing History.

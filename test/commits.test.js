@@ -433,3 +433,47 @@ test("Pull preserves overlapping edits and does not auto-stash", () => {
   assert.equal(fs.readFileSync(path.join(fx.primary, "a.txt"), "utf8"), "working\n");
   assert.equal(git(fx.primary, ["stash", "list"]), "");
 });
+
+test("commit graph includes branches, merge edges, parents, tags and remote labels", () => {
+  const commitFile = (repo, file, message) => {
+    fs.writeFileSync(path.join(repo, file), message);
+    git(repo, ["add", file]);
+    git(repo, ["commit", "-m", message]);
+    return git(repo, ["rev-parse", "HEAD"]);
+  };
+  const side = commitFile(fx.worktree, "side.txt", "Side branch");
+  commitFile(fx.primary, "main.txt", "Main branch");
+  git(fx.primary, ["merge", "--no-ff", "b1", "-m", "Merge side branch"]);
+  git(fx.primary, ["tag", "v1"]);
+  const tip = commitFile(fx.worktree, "unmerged.txt", "Unmerged side commit");
+  git(fx.primary, ["update-ref", "refs/remotes/origin/side", tip]);
+  const result = listCommits(fx.primary, {graph: true});
+  const merge = result.commits.find(c => c.subject === "Merge side branch");
+  assert.equal(merge.parents.length, 2);
+  assert.ok(merge.parents.includes(side));
+  assert.match(merge.refs, /HEAD ->|tag: v1/);
+  assert.ok(merge.graphLines.some(line => line.includes("\\")));
+  const unmerged = result.commits.find(c => c.hash === tip);
+  assert.match(unmerged.refs, /b1/);
+  assert.match(unmerged.refs, /origin\/side/);
+  assert.ok(!listCommits(fx.primary).commits.some(c => c.hash === tip));
+  const positions = new Map(result.commits.map((c, i) => [c.hash, i]));
+  for (const [i, commit] of result.commits.entries()) {
+    assert.ok(commit.graphLines[0].includes("*"));
+    for (const parent of commit.parents) if (positions.has(parent)) assert.ok(positions.get(parent) > i);
+  }
+  assert.equal(listCommits(fx.primary, {graph: true, limit: 2}).commits.length, 2);
+  const cli = spawnSync(process.execPath, [path.join(__dirname, "../bin/orca-wt.js"), "commits", fx.primary, "--graph", "--limit", "2"], {encoding: "utf8"});
+  assert.equal(JSON.parse(cli.stdout).commits[0].hash, result.commits[0].hash);
+});
+
+test("commit graph handles an empty repository and detached HEAD", () => {
+  const empty = path.join(fx.primary, "..", "empty-graph");
+  git(fx.primary, ["init", empty]);
+  assert.deepEqual(listCommits(empty, {graph: true}), {commits: []});
+  git(fx.primary, ["checkout", "--detach"]);
+  const commits = listCommits(fx.primary, {graph: true}).commits;
+  assert.equal(commits.length, 1);
+  assert.match(commits[0].refs, /HEAD/);
+  assert.deepEqual(commits[0].parents, []);
+});

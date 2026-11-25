@@ -18,7 +18,30 @@ FULL=0
 MODS=("$@")
 if [[ ${#MODS[@]} -eq 0 ]]; then
   FULL=1
-  MODS=(orca-setup orca-remove projects orca-agents orca-worktree orca-project orca-commits orca-usage orca-usage-panel orca-tabs orca-resources orca-resources-panel)
+  MODS=()
+  for manifest in "$REPO"/mods/*/mod.json; do
+    MODS+=("$(basename "$(dirname "$manifest")")")
+  done
+fi
+
+# Gitview's companions form one unit. Source comes from this repo; only
+# the pinned Rust engine is downloaded, with its committed SHA-256 checked.
+INSTALL_GITVIEW=0
+for m in "${MODS[@]}"; do
+  case "$m" in gitview|gitview-*) INSTALL_GITVIEW=1 ;; esac
+done
+if [[ $INSTALL_GITVIEW -eq 1 ]]; then
+  if [[ $FULL -eq 0 ]]; then
+    for manifest in "$REPO"/mods/gitview*/mod.json; do
+      m="$(basename "$(dirname "$manifest")")"
+      case " ${MODS[*]} " in *" $m "*) ;; *) MODS+=("$m") ;; esac
+    done
+  fi
+  GITVIEW_ENGINE="$("$NODE_BIN" "$REPO/scripts/gitview-engine.js" "$HERDR_APP_HOME")"
+  HERDR_BIN="${HERDR_APP_BIN:-$(command -v herdr-app || true)}"
+  HC_BIN="$(command -v hc || true)"
+  HERDR_BIN="${HERDR_BIN:-herdr-app}"
+  HC_BIN="${HC_BIN:-hc}"
 fi
 
 # The orca-wt CLI needs its npm dependency (yaml).
@@ -38,6 +61,32 @@ for m in "${MODS[@]}"; do
     echo "unknown mod: $m" >&2
     exit 1
   fi
+
+  case "$m" in gitview|gitview-*)
+    # A complete folder is swapped once so Herdr never loads a partially
+    # copied module graph, and unchanged mods don't restart their tasks.
+    dest="$HERDR_APP_HOME/mods/$m"
+    tmp="$(mktemp -d "$HERDR_APP_HOME/.install-XXXXXX")"
+    rsync -aL "$src/" "$tmp/"
+    if [[ "$m" == gitview ]]; then
+      "$NODE_BIN" -e '
+        const fs = require("node:fs");
+        const [out, bin, herdr_app, hc] = process.argv.slice(1);
+        fs.writeFileSync(out, JSON.stringify({bin, herdr_app, hc}, null, 2) + "\n");
+      ' "$tmp/config.json" "$GITVIEW_ENGINE" "$HERDR_BIN" "$HC_BIN"
+    fi
+    if [[ -d "$dest" ]] && diff -rq -x '*.d.ts' -x jsconfig.json -x '*.before-orca' -x '.*' "$tmp" "$dest" >/dev/null 2>&1 \
+      && { [[ "$m" != gitview ]] || cmp -s "$tmp/config.json" "$dest/config.json"; }; then
+      rm -rf "$tmp"
+    else
+      if [[ -d "$dest/.cache" ]]; then cp -R "$dest/.cache" "$tmp/.cache"; fi
+      if [[ -e "$dest" || -L "$dest" ]]; then mv "$dest" "$tmp.old"; fi
+      mv "$tmp" "$dest"
+      rm -rf "$tmp.old"
+    fi
+    echo "installed mod: $m"
+    continue
+  ;; esac
 
   "$NODE_BIN" -e '
     const fs = require("node:fs");

@@ -5,6 +5,50 @@ const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
 
+test('standard install includes local gitview sources and preserves them on reinstall', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orca-gitview-install-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const repo = path.join(__dirname, '..');
+  const appHome = path.join(root, 'herdr');
+  const binDir = path.join(root, 'bin');
+  fs.mkdirSync(binDir);
+  for (const name of ['herdr-app', 'hc', 'herdr-gitview']) {
+    fs.writeFileSync(path.join(binDir, name), '#!/bin/sh\nexit 0\n', {mode: 0o755});
+  }
+  const env = {...process.env, HERDR_APP_HOME: appHome,
+    PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+    HERDR_APP_BIN: path.join(binDir, 'herdr-app'),
+    GITVIEW_BIN: path.join(binDir, 'herdr-gitview')};
+  function install(args = []) {
+    const result = spawnSync('bash', ['scripts/install.sh', ...args], {cwd: repo, env, encoding: 'utf8'});
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  }
+  install();
+  const expected = fs.readdirSync(path.join(repo, 'mods')).filter(name => fs.existsSync(path.join(repo, 'mods', name, 'mod.json')));
+  assert.deepEqual(fs.readdirSync(path.join(appHome, 'mods')).sort(), expected.sort());
+  for (const name of expected.filter(n => n === 'gitview' || n.startsWith('gitview-'))) {
+    for (const file of fs.readdirSync(path.join(repo, 'mods', name)).filter(n => n.endsWith('.js'))) {
+      assert.equal(fs.readFileSync(path.join(appHome, 'mods', name, file), 'utf8'), fs.readFileSync(path.join(repo, 'mods', name, file), 'utf8'));
+    }
+    assert.equal(fs.existsSync(path.join(appHome, 'mods', name, 'config.js')), false);
+  }
+  const engineConfig = JSON.parse(fs.readFileSync(path.join(appHome, 'mods/gitview/config.json'), 'utf8'));
+  assert.equal(engineConfig.bin, env.GITVIEW_BIN);
+  const keys = JSON.parse(fs.readFileSync(path.join(appHome, 'keys.json'), 'utf8'));
+  assert.equal(keys['layout:orca']['cmd-shift-g'], 'mod.open:gitview-sidebar');
+  assert.equal(keys['layout:orca']['cmd-g'], 'mod.open:gitview-tab');
+  const layoutFile = path.join(appHome, 'layouts/orca.json');
+  assert.equal(fs.readFileSync(layoutFile, 'utf8'), fs.readFileSync(path.join(repo, 'layouts/orca.json'), 'utf8'));
+  const original = JSON.parse(fs.readFileSync(layoutFile, 'utf8'));
+  original.customPreference = 'keep me';
+  fs.writeFileSync(layoutFile, JSON.stringify(original));
+  const main = path.join(appHome, 'mods/gitview/main.js');
+  const inode = fs.statSync(main).ino;
+  install(['gitview']);
+  assert.equal(fs.statSync(main).ino, inode, 'unchanged gitview source is not reloaded');
+  assert.equal(JSON.parse(fs.readFileSync(layoutFile, 'utf8')).customPreference, 'keep me');
+});
+
 test('partial reinstall preserves legacy icons used by older companion panels', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orca-install-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
