@@ -76,6 +76,7 @@ export const MODES = {
       { caps: ["enter"], label: enterLabel, rank: 3, on: { enter: (v, cx) => v.enter(cx), e: (v, cx) => v.enter(cx) } },
       { caps: ["x"], label: "discard", rank: 4, when: worktree, on: { x: (v, cx) => v.rowAction("discard", null, cx) } },
       { caps: ["c"], label: "commit", rank: 5, when: worktree, on: { c: (v) => worktree(v) && v.commitInput.focus() } },
+      { caps: ["P"], label: "push", rank: 5.5, when: worktree, on: { P: (v, cx) => v.push(cx) } },
       { caps: ["l"], label: "history", rank: 6, on: { l: (v, cx) => openLog(v, cx) } },
       { caps: ["t"], label: "tree", rank: 7, on: { t: (v, cx) => v.toggleTree(cx) } },
       { caps: ["n"], label: "notes", rank: 8, on: { n: back("notes") } },

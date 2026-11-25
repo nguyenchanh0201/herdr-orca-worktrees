@@ -71,9 +71,9 @@ for m in "${MODS[@]}"; do
     if [[ "$m" == gitview ]]; then
       "$NODE_BIN" -e '
         const fs = require("node:fs");
-        const [out, bin, herdr_app, hc] = process.argv.slice(1);
-        fs.writeFileSync(out, JSON.stringify({bin, herdr_app, hc}, null, 2) + "\n");
-      ' "$tmp/config.json" "$GITVIEW_ENGINE" "$HERDR_BIN" "$HC_BIN"
+        const [out, bin, herdr_app, hc, node, cli] = process.argv.slice(1);
+        fs.writeFileSync(out, JSON.stringify({bin, herdr_app, hc, node, cli}, null, 2) + "\n");
+      ' "$tmp/config.json" "$GITVIEW_ENGINE" "$HERDR_BIN" "$HC_BIN" "$NODE_BIN" "$CLI_PATH"
     fi
     if [[ -d "$dest" ]] && diff -rq -x '*.d.ts' -x jsconfig.json -x '*.before-orca' -x '.*' "$tmp" "$dest" >/dev/null 2>&1 \
       && { [[ "$m" != gitview ]] || cmp -s "$tmp/config.json" "$dest/config.json"; }; then

@@ -17,6 +17,19 @@ async function loadConfig() {
   return config;
 }
 
+// Reuse Orca's branch-aware push implementation (including first publish).
+export async function pushRepo(where) {
+  if (!where?.root) throw new Error("No repository selected");
+  if (where.on) throw new Error("Push from gitview currently supports local repositories only");
+  const cfg = await loadConfig();
+  if (!cfg.node || !cfg.cli) throw new Error("Run bash scripts/install.sh to configure gitview push");
+  const result = await exec(cfg.node, [cfg.cli, "git-push", where.root]);
+  let response;
+  try { response = JSON.parse(result.stdout); } catch { /* handled below */ }
+  if (result.code !== 0 || !response?.ok) throw new Error(response?.error || result.stderr || "Git push failed");
+  return response;
+}
+
 // The environment the binary needs under the app (it can't see appHome()).
 function hostEnv(cfg) {
   const env = ["GITVIEW_HOST=app", `HERDR_APP_HOME=${appHome()}`];

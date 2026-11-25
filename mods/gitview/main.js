@@ -15,7 +15,7 @@ import { View } from "gpui-kit";
 import { v_flex, TextareaState } from "gpui-base";
 import { focused, notify, panes, props, shared, theme } from "herdr";
 import { Tracer, event, run } from "./telemetry.js";
-import { endTerminal, gv, labelled, message, onArgs } from "./engine.js";
+import { endTerminal, gv, labelled, message, onArgs, pushRepo } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import { answer, askIn, cursorIn, handoffIn, setIgnoredDirs, handoffs, liveView, notesKey, notesOf, setHandoff, setTreeMode, setView, treeMode, viewIn } from "./shared.js";
@@ -852,6 +852,25 @@ export default class GitList extends View {
       }
       if (this.ownOp) this.ownOp.at = Date.now(); // (revive may have dropped it)
       this.refresh(cx);
+    });
+  }
+
+  push(cx) {
+    if (this.mode !== "files" || this.scope !== "worktree" || this.typing || !this.showsFocus() || !this.work || this.pushing || this.commitRunning() || this.loads.busy()) return;
+    const where = {...this.work.where};
+    this.pushing = true;
+    this.loads.run(cx, "push", async (cx) => {
+      try {
+        const result = await pushRepo(where);
+        notify({title: "Pushed", body: `Pushed to ${result.remote}`, level: "success"});
+      } catch (error) {
+        const body = message(error);
+        this.flash.set(body);
+        notify({title: "Push failed", body, level: "error"});
+      } finally {
+        this.pushing = false;
+        if (this.work?.where.root === where.root && this.work?.where.on === where.on) this.refresh(cx);
+      }
     });
   }
 
