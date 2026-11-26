@@ -50,6 +50,8 @@ fi
 shopt -s nullglob
 for cfg in "$HERDR_APP_HOME"/mods/*/config.js; do
   mod=$(basename "$(dirname "$cfg")")
+  # The Commits dialog still uses Git subcommands provided by the Node CLI.
+  [[ "$mod" == orca-commits ]] && continue
   if ! grep -q 'orca-wt' "$cfg"; then
     [[ -f "$REPO/mods/$mod/mod.json" ]] || continue
     grep -Fq '"cli":"--"' "$cfg" || continue

@@ -106,7 +106,7 @@ That form skips layout installation and checks, but applies the small Git panel 
 
 ## Rust CLI (optional)
 
-`rust/` is a Rust port of `bin/orca-wt.js`. Gitview uses its own Rust engine. The legacy Commits dialog requires the Node CLI; its source control and commit browsing subcommands are not yet ported. To build the Rust CLI and point the installed mods at the binary:
+`rust/` is a Rust port of `bin/orca-wt.js`. Gitview uses its own Rust engine. The Rust installer keeps the legacy Commits dialog on the Node CLI because Node provides its source control and commit browsing commands. To build the Rust CLI and switch the compatible mods to it:
 
 ```bash
 bash scripts/install-rust.sh

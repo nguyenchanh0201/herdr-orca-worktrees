@@ -41,6 +41,13 @@ for (const name of expectedMods) {
   const match = /^export default (.+);$/.exec(config);
   assert.ok(match, `Invalid config: ${file}`);
   const { node, cli } = JSON.parse(match[1]);
+  if (name === 'orca-commits') {
+    assert.equal(cli, path.resolve('bin/orca-wt.js'), 'Commits dialog keeps the Node CLI');
+    const result = spawnSync(node, [cli, 'commits', process.cwd(), '--limit', '100', '--graph'], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.error?.message || result.stdout || result.stderr);
+    assert.ok(JSON.parse(result.stdout).commits.length > 0, 'Commits dialog can load commit history');
+    continue;
+  }
   assert.equal(node, process.argv[2], `${name} Rust binary path`);
   assert.equal(cli, '--', `${name} Rust argument separator`);
 
