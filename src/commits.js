@@ -271,7 +271,11 @@ function gitPush(repo) {
   if (target.reason) return { error: target.reason };
   // An explicit refspec publishes only this branch, regardless of push.default.
   const res = networkGit(context.root, ["push", "--porcelain", ...(target.needsUpstream ? ["--set-upstream"] : []), "--", target.remote, `HEAD:${target.ref}`]);
-  return res.status === 0 ? { ok: true, remote: target.remote } : { error: gitError(res, "git push failed") };
+  if (res.status === 0) return { ok: true, remote: target.remote };
+  // Porcelain puts per-ref rejection details on stdout, even when stderr is generic.
+  const rejection = res.stdout?.split("\n").find(line => line.startsWith("!\t"))?.split("\t")[2]?.trim();
+  const error = rejection ? [rejection, res.stderr?.trim()].filter(Boolean).join("\n") : gitError(res, "git push failed");
+  return { error };
 }
 
 function gitPull(repo) {

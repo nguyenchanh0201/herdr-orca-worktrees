@@ -352,7 +352,12 @@ test("Push reports a non-fast-forward rejection without overwriting the remote",
   fs.writeFileSync(path.join(fx.primary, "local-only.txt"), "local\n");
   git(fx.primary, ["add", "local-only.txt"]);
   git(fx.primary, ["commit", "-m", "Local change"]);
-  assert.match(gitPush(fx.primary).error, /rejected|fetch first|non-fast-forward/i);
+  const push = spawnSync(process.execPath, [path.join(__dirname, "../bin/orca-wt.js"), "git-push", fx.primary], {
+    encoding: "utf8",
+    env: { ...process.env, GIT_ADVICE: "0", LC_ALL: "C" },
+  });
+  assert.equal(push.status, 0, push.error?.message || push.stderr);
+  assert.match(JSON.parse(push.stdout).error, /\[rejected\] \((fetch first|non-fast-forward)\)/);
   assert.equal(git(remote, ["rev-parse", `refs/heads/${branch}`]), remoteHead);
 });
 
