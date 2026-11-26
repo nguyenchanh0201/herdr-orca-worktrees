@@ -70,7 +70,25 @@ export function renderSpace(view, t) {
 
   return wrap
     .when(Boolean(p.folder || p.worktree), (el) =>
-      el.child(view.subRow("open-in", "Open in", (cx) => view.openOpenIn(p.folder || p.worktree, cx), t))
+      el
+        .child(view.subRow("open-in", "Open in", (cx) => view.openOpenIn(p.folder || p.worktree, cx), t))
+        .child(
+          view.popupRow(
+            "space-commits",
+            "Commits…",
+            () => {
+              view.close();
+              openOverlay({
+                mod: "orca-commits",
+                kind: "dialog",
+                width: 1050,
+                height: 650,
+                props: { folder: p.folder || p.worktree },
+              });
+            },
+            t
+          )
+        )
     )
     .when(Boolean(p.hasAgents && !p.sleeping && p.space), (el) =>
       el.child(

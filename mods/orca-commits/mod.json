@@ -1,0 +1,10 @@
+{
+  "place": "none",
+  "title": "Changes",
+  "focusable": true,
+  "overlay": {
+    "kind": "dialog",
+    "width": 1050,
+    "height": 650
+  }
+}

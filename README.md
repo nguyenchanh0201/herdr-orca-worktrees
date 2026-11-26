@@ -14,7 +14,7 @@ Orca-style chrome for [Herdr.app](https://herdr.dev): a projects sidebar with wo
 - **Worktree cards.** The selected card is outlined.
   - The `main` badge marks the main checkout.
   - The agents fold into one strip that shows the most urgent status (blocked `!`, working `●`, done `✓`, idle `○`).
-  - Click the strip for the list. Each row reads like "Working - Claude Code", and clicking it jumps to that agent.
+  - Click the strip, or select the worktree and press `l`, for the list. Use `j/k` to select an agent and `Enter` to focus it; `h` returns to the worktree, then folds its agent list. Each row reads like "Working - Claude Code", and clicking it jumps to that agent.
 - **New worktree with an agent:** use `+` on a project header. Agents start with full access.
 - **Sleep and wake:** sleep quits a worktree's agents and remembers how to resume them (🌙). Wake brings them back in the same conversations. A half-typed draft is never lost.
 - **Right-click menus:**
@@ -47,6 +47,10 @@ It samples `ps` every 2 seconds while open and every 5 seconds otherwise, and it
 
 - **Create worktree** dialog, with a local and remote branch picker and `orca.yaml` setup scripts.
 - **Remove worktree** dialog, with archive handling.
+- **Git changes and diffs with [herdr-gitview](https://github.com/ChmaraX/herdr-gitview):** included with `bash scripts/install.sh`. Its source and our customizations live in `mods/gitview*`; the installer downloads only the pinned engine binary. **Changes** or `⌘⇧G` opens its file list; selecting a file opens a syntax-highlighted diff pane beside it. It supports staged/unstaged changes, conflicts, a folder tree, stage/unstage/discard, commits, branch comparisons, history, previews, and line review notes. `Enter` opens the file in your editor. `⌘G` opens a separate review tab. Gitview owns navigation within its panel: `j/k` move, `s/u/x` stage/unstage/discard, `c` writes a commit message, `Shift+P` pushes the current local branch (setting its upstream on first publish), `l` opens history, and `?` shows all keys. With nothing staged, its commit action stages and commits everything. When there are no file changes and no commit message, the button shows **Push N ↑** for outgoing commits, or **Push · publish ↑** for a new branch. See the [upstream guide](https://github.com/ChmaraX/herdr-gitview#quick-start) for details. The Changes and Staged Changes headers always show stage-all (+) and unstage-all (−) buttons. `j/k` reaches the headers; `s` stages Changes, `u` unstages Staged Changes, and `Enter` runs the section’s primary action. **Commits…** in the worktree menu still opens the original dialog.
+- **Built-in Changes panel (without gitview):** click **Changes** beside **Files**, or press `⌘⇧G` for the Source Control view of the selected worktree. Enter a commit message, stage (`+`) or unstage (`−`) individual files or entire groups, then commit the staged changes. With an empty commit message, the main action becomes **Push N ↑** for outgoing commits or **Pull N ↓** for incoming commits; both appear when the branch has commits in both directions. Typing a message restores **Commit**. **Fetch** updates the incoming count without changing working files. With Changes focused, use `Shift+P` to push or `Shift+U` to pull; these shortcuts stay inactive while typing a commit message and in History. Pull only fast-forwards; divergent branches report an error. **Push · publish ↑** sets the upstream for a new branch. Git rejections and authentication errors appear in the panel. The **Staged Changes** and **Changes** group titles remain visible with file counts, including when empty. Select a title by clicking it or using `j/k`, then press `s` to stage all Changes or unstage all Staged Changes. The title’s `+`/`−` buttons do the same; click its chevron to collapse the group. Merge conflicts appear separately; new files appear under Changes. Selecting a file shows the staged or working version with old/new line numbers. Branch and ahead/behind counts appear above the message. **Open in Neovim** opens the selected working file in a terminal pane beside the current pane (or a new tab if no pane exists). Neovim must be available as `nvim` on PATH. Use `:w` to save and `:q` to close its pane, then `r` or `↻` to refresh Git immediately. Staged selections open the working file; saving does not stage it. Commit drafts are remembered per worktree while the panel stays open; failed commits preserve the message. The **History** tab (`⌘L`) shows a Git graph of the latest 100 commits across local and fetched remote branches, with branch/tag labels and merge connections. Select a commit to inspect its changed files and per-file diffs (merges compare to their first parent). Local file changes refresh automatically, with a ten-second polling fallback; `↻` refreshes immediately. Added/deleted line counts appear beside files and in the header; the totals count staged and working edits separately. Diff previews are limited to 1,500 lines and 4,000 characters per line. This custom panel currently supports local workspaces; remote contexts show an explicit limitation. Drag the dividers to resize the commit form, file list, and diff; History sections resize too. Sizes are saved across refreshes, mode switches, and app restarts. **Commits…** in a worktree's right-click menu opens a wider dialog with the same views. See [VS Code Git investigation](docs/vscode-git-investigation.md) for reference evidence and scope.
+- **Keyboard navigation in the built-in Changes panel:** press `⌘⇧G` to open and focus the panel, then use `⌘H` for the Changes tab and `⌘L` for History. `⌘H` overrides Hide only while this panel has focus. In the Orca layout, `⌘⇧H` / `⌘⇧L` navigate left/right, including into and out of the Projects sidebar, instead of using `⌘⇧L` to switch layouts. Use `j/k` to move through commits, files, or diff lines; `⌘⇧H` / `⌘⇧L` to move left/right between panes and panel sections (`h/l` also navigate sections); `gg/G` for first/last; and `Ctrl-d/u` to move half a page in the diff. Counts such as `5j` work. In Changes, `i` focuses the commit message, `Esc` returns to navigation, `s` stages the selected working file or unstages the selected staged file, `r` refreshes and `⌘Enter` in the message commits staged files. Typing in the message field bypasses Vim navigation. Arrow keys, Enter, and Tab/Shift-Tab also navigate. Escape returns to the previous section, then to the terminal; `q` closes Changes.
+- **Keyboard navigation in Projects:** focus the sidebar with `⌘⇧H` from the leftmost terminal. Use `j/k` to move the highlighted cursor, `h/l` to collapse/expand groups or move to a parent/child, and `Enter` to open the selected worktree or agent. `gg/G`, counts such as `3j`, arrows, and `Ctrl-d/u` also work. Movement follows the visible sorted list and does not switch worktrees until you press Enter. `Esc` or `⌘⇧L` returns to the terminal. If the layout has an Agents panel below Projects, `⌘⇧J` moves down into Agents and `⌘⇧K` moves back up to Projects. Plain motions stay inside the focused pane, including at list boundaries; only the pane-navigation shortcuts move between Projects and Agents. The Agents panel supports the same motions, group/sub-agent folding, and Enter to focus an agent or peek an unattached sub-agent.
 - Orca-style tabs.
 
 ## Requirements
@@ -66,11 +70,13 @@ cd herdr-orca-worktrees
 bash scripts/install.sh
 ```
 
-That's all. The script:
+Gitview is included in the standard install. The UI is copied from this repo's `mods/gitview*` folders, including our section buttons and Vim navigation. The first install downloads the pinned v0.6.0 Rust engine and verifies its archive against a committed SHA-256; later installs reuse the verified cached binary. For an offline install, set `GITVIEW_BIN=/absolute/path/to/herdr-gitview`. Gitview needs `git`, `hc`, and Herdr ≥ 0.1.12 at runtime. `scripts/install-gitview.sh` remains an alias for the standard installer.
+
+The standard `scripts/install.sh` script:
 
 1. Installs the CLI's npm dependency (`yaml`) if it's missing.
-2. Copies every mod in `mods/` to `~/.config/herdr-app/mods/`. It writes each mod a `config.js` holding the paths of your `node` and of `bin/orca-wt.js`.
-3. Copies `layouts/orca.json` to `~/.config/herdr-app/layouts/` if you don't have one, and **never overwrites** an existing one.
+2. Copies every mod in `mods/` to `~/.config/herdr-app/mods/`. Orca mods receive `config.js` with Node and CLI paths; gitview receives `config.json` with its engine, Herdr and hc paths.
+3. Copies `layouts/orca.json` to `~/.config/herdr-app/layouts/` if you don't have one. For an existing Orca layout with the standard panel stack, it enables gitview and the Orca tab bar, preserving customizations and saving `orca.json.before-git` as a backup.
 4. Runs `herdr-app check` on every mod.
 5. Switches the open Herdr window to the `orca` layout, if the layout was just installed.
 
@@ -80,7 +86,8 @@ You should see `all mods passed herdr-app check`. If Herdr wasn't open, open it 
 
 - **Left sidebar:** shows **Projects**. Use `+` on a project header to create a worktree.
 - **Bottom bar:** shows usage meters (`5h … · 7d …`) and the resource chip (`▭ 2.14 GB · >_ 5`).
-- **Right-click a worktree card:** you get Sleep, Open in ›, and the rest.
+- **Top right:** **Files** and **Changes** toggle the side panel.
+- **Right-click a worktree card:** you get Sleep, Open in ›, Commits…, and the rest.
 
 ## Update
 
@@ -95,11 +102,11 @@ To reinstall just some mods, which is faster when you're working on one, name th
 bash scripts/install.sh projects orca-project
 ```
 
-That form skips the layout and the checks. Run `herdr-app check ~/.config/herdr-app/mods/<mod>` yourself afterwards.
+That form skips layout installation and checks, but applies the small Git panel upgrade to an existing Orca layout when both companion mods are installed. Run `herdr-app check ~/.config/herdr-app/mods/<mod>` yourself afterwards.
 
 ## Rust CLI (optional)
 
-`rust/` is a Rust port of `bin/orca-wt.js` (same subcommands, same JSON on stdout). To build it and point the installed mods at the binary:
+`rust/` is a Rust port of `bin/orca-wt.js`. Gitview uses its own Rust engine. The Rust installer keeps the legacy Commits dialog on the Node CLI because Node provides its source control and commit browsing commands. To build the Rust CLI and switch the compatible mods to it:
 
 ```bash
 bash scripts/install-rust.sh
@@ -123,7 +130,7 @@ From the release checkout, run `bash scripts/install-rust.sh ~/.local/bin/orca-w
 
 ```bash
 cd ~/.config/herdr-app
-rm -rf mods/{orca-setup,orca-remove,projects,orca-worktree,orca-project,orca-usage,orca-usage-panel,orca-tabs,orca-resources,orca-resources-panel} orca-icons
+rm -rf mods/{orca-setup,orca-remove,projects,orca-worktree,orca-project,orca-commits,orca-usage,orca-usage-panel,orca-tabs,orca-resources,orca-resources-panel,gitview,gitview-*} orca-icons gitview
 rm layouts/orca.json
 ```
 

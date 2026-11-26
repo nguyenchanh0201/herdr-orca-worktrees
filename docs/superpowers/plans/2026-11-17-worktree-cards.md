@@ -28,7 +28,7 @@
 - **The active space's card after a fold toggle:** `scroll_to_item` still points at the active card. Task 2's harness test checks the `activeIndex` it passes.
 - **A sleeping worktree with no live space:** the card still renders the dimmed strip with a moon, and clicking the title still wakes it. Task 2's harness test.
 - **An unknown or missing `a.status`:** the glyph falls back to `○`, coloured `t.unknown`, with no crash. Task 1 tests that `topStatus` ignores unknown statuses.
-
+--test
 ---
 
 ### Task 1: Status helpers
